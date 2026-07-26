@@ -1,57 +1,55 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { UserCheck, Clock, AlertTriangle, Upload, CheckCircle, CreditCard, Plus } from 'lucide-react';
+import { LogOut, Clock, AlertTriangle, CreditCard, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
-import { StatusBadge } from '../components/ui/Badge';
 import { formatCurrency, formatDateTime } from '../lib/utils';
+import { useAuth } from '../lib/auth';
 import { api, apiError } from '../api/client';
-import { format, parseISO, isToday, isPast } from 'date-fns';
+import { parseISO, isToday, isPast, format } from 'date-fns';
 
 interface Booking {
   id: string;
   reference: string;
   guestName: string;
-  guestMobile: string;
   checkInDate: string;
   checkOutDate: string;
-  adults: number;
-  children: number;
-  totalGuests: number;
+  actualCheckIn?: string;
   nights: number;
   isAc: boolean;
   baseNightlyRate: string;
   acSurchargePerNight: string;
+  roomCharge: string;
+  additionalCharges: string;
+  serviceCharge: string;
+  discount: string;
   invoiceTotal: string;
   paidAmount: string;
   outstandingBalance: string;
   status: string;
-  room: { number: string; capacity: number };
-  guest: { id: string; fullName: string; documentNumberMasked: string; mobile: string; documents: Array<{id: string; side: string}> } | null;
+  room: { number: string };
+  payments: Array<{ id: string; paymentReference: string; amount: string; purpose: string; method: string; paymentDate: string }>;
 }
 
-export default function CheckIn() {
+export default function CheckOut() {
+  const { can, user } = useAuth();
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const preselectedId = searchParams.get('booking');
   const [selectedId, setSelectedId] = useState(preselectedId || '');
-  const [roomNotes, setRoomNotes] = useState('');
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadedFront, setUploadedFront] = useState(false);
-  const [error, setError] = useState('');
   const [payAmount, setPayAmount] = useState(0);
   const [payMethod, setPayMethod] = useState('Cash');
-  const [payPurpose, setPayPurpose] = useState('Deposit');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [error, setError] = useState('');
 
   const { data: dueList = [] } = useQuery<Booking[]>({
-    queryKey: ['checkin-due'],
-    queryFn: () => api.get('/bookings', { params: { status: 'Reserved', limit: 50 } })
+    queryKey: ['checkout-due'],
+    queryFn: () => api.get('/bookings', { params: { status: 'CheckedIn', limit: 50 } })
       .then(r => r.data.data.filter((b: Booking) => {
-        const d = parseISO(b.checkInDate);
+        const d = parseISO(b.checkOutDate);
         return isToday(d) || isPast(d);
       })),
     refetchInterval: 30000,
@@ -63,11 +61,14 @@ export default function CheckIn() {
     enabled: !!selectedId,
   });
 
+  const outstanding = selectedBooking ? Number(selectedBooking.outstandingBalance) : 0;
+  const canOverride = can('manage_rooms'); // managers+
+
   const addPaymentMutation = useMutation({
     mutationFn: () => api.post('/payments', {
       bookingId: selectedId,
       amount: payAmount,
-      purpose: payPurpose,
+      purpose: 'FinalPayment',
       method: payMethod,
     }),
     onSuccess: () => {
@@ -77,34 +78,16 @@ export default function CheckIn() {
     onError: (err) => setError(apiError(err)),
   });
 
-  const hasFrontDoc = selectedBooking?.guest?.documents?.some(d => d.side === 'front') || uploadedFront;
-
-  const uploadDoc = async () => {
-    if (!uploadFile || !selectedBooking?.guest) return;
-    setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append('document', uploadFile);
-      fd.append('side', 'front');
-      await api.post(`/documents/guests/${selectedBooking.guest.id}`, fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      setUploadedFront(true);
-      qc.invalidateQueries({ queryKey: ['booking', selectedId] });
-    } catch (err) {
-      setError(apiError(err));
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const checkInMutation = useMutation({
-    mutationFn: () => api.post(`/bookings/${selectedId}/check-in`, { roomConditionNotes: roomNotes }),
-    onSuccess: () => {
+  const checkoutMutation = useMutation({
+    mutationFn: () => api.post(`/bookings/${selectedId}/checkout`, {
+      overrideReason: overrideReason || undefined,
+    }),
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
-      qc.invalidateQueries({ queryKey: ['checkin-due'] });
-      navigate('/rooms');
+      qc.invalidateQueries({ queryKey: ['checkout-due'] });
+      const invId = res.data?.invoice?.id;
+      navigate(invId ? `/invoices/${invId}` : '/invoices');
     },
     onError: (err) => setError(apiError(err)),
   });
@@ -112,36 +95,39 @@ export default function CheckIn() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Check-In Queue</h2>
-        <p className="text-sm text-slate-500 mt-1">Arrivals due today and overdue arrivals</p>
+        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Checkout Queue</h2>
+        <p className="text-sm text-slate-500 mt-1">Departures due today and overdue checkouts</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Queue */}
         <Card>
-          <CardHeader><CardTitle>Due Arrivals ({dueList.length})</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Due Departures ({dueList.length})</CardTitle></CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
               {dueList.length === 0 && (
-                <p className="px-6 py-8 text-center text-sm text-slate-400">No pending check-ins</p>
+                <p className="px-6 py-8 text-center text-sm text-slate-400">No pending checkouts</p>
               )}
               {dueList.map(b => {
-                const date = parseISO(b.checkInDate);
+                const date = parseISO(b.checkOutDate);
                 const overdue = isPast(date) && !isToday(date);
                 return (
                   <button key={b.id}
-                    className={`w-full px-6 py-4 text-left hover:bg-slate-50 transition-colors ${selectedId === b.id ? 'bg-indigo-50' : ''}`}
-                    onClick={() => { setSelectedId(b.id); setError(''); setUploadedFront(false); }}>
+                    className={`w-full px-6 py-4 text-left hover:bg-slate-50 transition-colors ${selectedId === b.id ? 'bg-rose-50' : ''}`}
+                    onClick={() => { setSelectedId(b.id); setError(''); }}>
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-slate-900">{b.guestName}</p>
                         <p className="text-xs text-slate-500">{b.reference} · Room {b.room.number}</p>
                         <p className="text-xs text-slate-500">{format(date, 'MMM dd, HH:mm')}</p>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right space-y-1">
                         {overdue
-                          ? <span className="inline-flex items-center text-xs text-rose-600 font-medium"><AlertTriangle className="w-3 h-3 mr-1" />Overdue</span>
-                          : <span className="inline-flex items-center text-xs text-indigo-600 font-medium"><Clock className="w-3 h-3 mr-1" />Today</span>}
+                          ? <div className="text-xs text-rose-600 font-medium flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Overdue</div>
+                          : <div className="text-xs text-amber-600 font-medium flex items-center gap-1"><Clock className="w-3 h-3" />Today</div>}
+                        {Number(b.outstandingBalance) > 0 && (
+                          <div className="text-xs font-semibold text-rose-700">{formatCurrency(Number(b.outstandingBalance))}</div>
+                        )}
                       </div>
                     </div>
                   </button>
@@ -151,89 +137,60 @@ export default function CheckIn() {
           </CardContent>
         </Card>
 
-        {/* Check-in form */}
+        {/* Checkout detail */}
         {selectedBooking ? (
           <div className="space-y-4">
             <Card>
-              <CardHeader><CardTitle>Booking {selectedBooking.reference}</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Checkout — {selectedBooking.reference}</CardTitle></CardHeader>
               <CardContent className="p-6 space-y-4">
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div><span className="text-slate-500">Guest</span><p className="font-medium">{selectedBooking.guestName}</p></div>
-                  <div><span className="text-slate-500">Room</span><p className="font-bold text-lg">Room {selectedBooking.room.number}</p></div>
-                  <div><span className="text-slate-500">Check-In</span><p className="font-medium">{format(parseISO(selectedBooking.checkInDate), 'dd MMM yyyy HH:mm')}</p></div>
-                  <div><span className="text-slate-500">Check-Out</span><p className="font-medium">{format(parseISO(selectedBooking.checkOutDate), 'dd MMM yyyy HH:mm')}</p></div>
-                  <div><span className="text-slate-500">Nights</span><p className="font-medium">{selectedBooking.nights}</p></div>
-                  <div><span className="text-slate-500">Guests</span><p className="font-medium">{selectedBooking.totalGuests}</p></div>
-                  <div><span className="text-slate-500">Type</span><p className="font-medium">{selectedBooking.isAc ? 'A/C' : 'Non-A/C'}</p></div>
-                  <div><span className="text-slate-500">Total</span><p className="font-semibold">{formatCurrency(Number(selectedBooking.invoiceTotal))}</p></div>
+                {/* Invoice breakdown */}
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-600">Guest</span><span className="font-medium">{selectedBooking.guestName}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Room</span><span className="font-medium">Room {selectedBooking.room.number} ({selectedBooking.isAc ? 'A/C' : 'Non-A/C'})</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Actual Check-In</span><span>{selectedBooking.actualCheckIn ? format(parseISO(selectedBooking.actualCheckIn), 'dd MMM HH:mm') : '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Expected Check-Out</span><span>{format(parseISO(selectedBooking.checkOutDate), 'dd MMM HH:mm')}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Nights</span><span>{selectedBooking.nights}</span></div>
+                  <div className="border-t border-slate-100 pt-2 mt-2 space-y-1.5">
+                    <div className="flex justify-between"><span className="text-slate-600">Room Charge</span><span>{formatCurrency(Number(selectedBooking.baseNightlyRate) * selectedBooking.nights)}</span></div>
+                    {selectedBooking.isAc && <div className="flex justify-between"><span className="text-slate-600">A/C Surcharge</span><span>{formatCurrency(Number(selectedBooking.acSurchargePerNight) * selectedBooking.nights)}</span></div>}
+                    {Number(selectedBooking.additionalCharges) > 0 && <div className="flex justify-between"><span className="text-slate-600">Additional Charges</span><span>{formatCurrency(Number(selectedBooking.additionalCharges))}</span></div>}
+                    {Number(selectedBooking.serviceCharge) > 0 && <div className="flex justify-between"><span className="text-slate-600">Service Charge</span><span>{formatCurrency(Number(selectedBooking.serviceCharge))}</span></div>}
+                    {Number(selectedBooking.discount) > 0 && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>−{formatCurrency(Number(selectedBooking.discount))}</span></div>}
+                    <div className="flex justify-between font-bold border-t border-slate-200 pt-2"><span>Invoice Total</span><span>{formatCurrency(Number(selectedBooking.invoiceTotal))}</span></div>
+                  </div>
                 </div>
 
-                {/* Document check */}
-                <div className={`rounded-lg p-3 border ${hasFrontDoc ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    {hasFrontDoc
-                      ? <><CheckCircle className="w-4 h-4 text-emerald-600" /><span className="text-emerald-700">Identity document on file</span></>
-                      : <><AlertTriangle className="w-4 h-4 text-amber-600" /><span className="text-amber-700">Identity document required before check-in</span></>}
-                  </div>
-                  {!hasFrontDoc && selectedBooking.guest && (
-                    <div className="mt-3 space-y-2">
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,application/pdf"
-                        onChange={e => setUploadFile(e.target.files?.[0] || null)}
-                        className="text-sm text-slate-600"
-                      />
-                      {uploadFile && (
-                        <Button size="sm" variant="outline" onClick={uploadDoc} disabled={uploading}>
-                          <Upload className="w-3 h-3 mr-1" />
-                          {uploading ? 'Uploading…' : 'Upload ID Document'}
-                        </Button>
-                      )}
+                {/* Payment history */}
+                {selectedBooking.payments.length > 0 && (
+                  <div className="bg-slate-50 rounded-lg p-3 space-y-1.5 text-sm">
+                    <p className="font-medium text-slate-700 text-xs uppercase tracking-wide">Payments</p>
+                    {selectedBooking.payments.map(p => (
+                      <div key={p.id} className="flex justify-between text-slate-600">
+                        <span>{p.purpose} ({p.method}) · {format(parseISO(p.paymentDate), 'dd MMM')}</span>
+                        <span className="font-medium">{formatCurrency(Number(p.amount))}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between font-semibold border-t border-slate-200 pt-1.5">
+                      <span>Paid</span><span className="text-emerald-700">{formatCurrency(Number(selectedBooking.paidAmount))}</span>
                     </div>
-                  )}
-                  {!selectedBooking.guest && (
-                    <p className="text-xs text-amber-600 mt-1">Create a guest record first to upload documents</p>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Room Condition Notes (optional)</label>
-                  <textarea
-                    value={roomNotes}
-                    onChange={e => setRoomNotes(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                    rows={2}
-                    placeholder="Note any pre-existing room condition issues…"
-                  />
-                </div>
-
-                {/* Balance summary */}
-                <div className="bg-slate-50 rounded-lg p-3 space-y-1.5 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-600">Invoice Total</span><span className="font-semibold">{formatCurrency(Number(selectedBooking.invoiceTotal))}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-600">Paid so far</span><span className="font-medium text-emerald-700">{formatCurrency(Number(selectedBooking.paidAmount))}</span></div>
-                  <div className="flex justify-between font-bold border-t border-slate-200 pt-1.5">
-                    <span>Balance Due</span>
-                    <span className={Number(selectedBooking.outstandingBalance) > 0 ? 'text-rose-700' : 'text-emerald-700'}>
-                      {formatCurrency(Number(selectedBooking.outstandingBalance))}
-                    </span>
+                    {outstanding > 0 && (
+                      <div className="flex justify-between font-bold text-rose-700">
+                        <span>Outstanding</span><span>{formatCurrency(outstanding)}</span>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
 
-                {/* Collect payment at check-in */}
-                {Number(selectedBooking.outstandingBalance) > 0 && (
+                {/* Quick payment */}
+                {outstanding > 0 && (
                   <div className="border border-slate-200 rounded-lg p-4 space-y-3">
                     <p className="text-sm font-medium text-slate-700 flex items-center gap-2">
-                      <CreditCard className="w-4 h-4" /> Collect Payment (optional)
+                      <CreditCard className="w-4 h-4" /> Record Payment
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <Input type="number" min={0} max={Number(selectedBooking.outstandingBalance)} value={payAmount || ''}
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input type="number" min={0} max={outstanding} value={payAmount}
                         onChange={e => setPayAmount(Number(e.target.value))}
-                        placeholder="Amount" />
-                      <Select value={payPurpose} onChange={e => setPayPurpose(e.target.value)}>
-                        <option value="Deposit">Deposit</option>
-                        <option value="PartialPayment">Partial</option>
-                        <option value="FinalPayment">Full Payment</option>
-                      </Select>
+                        placeholder={`Amount (max ${outstanding})`} />
                       <Select value={payMethod} onChange={e => setPayMethod(e.target.value)}>
                         <option value="Cash">Cash</option>
                         <option value="Card">Card</option>
@@ -241,17 +198,20 @@ export default function CheckIn() {
                         <option value="Other">Other</option>
                       </Select>
                     </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1" onClick={() => addPaymentMutation.mutate()}
-                        disabled={addPaymentMutation.isPending || payAmount <= 0}>
-                        <Plus className="w-3 h-3 mr-1" />
-                        {addPaymentMutation.isPending ? 'Recording…' : 'Record Payment'}
-                      </Button>
-                      <Button variant="ghost" size="sm"
-                        onClick={() => setPayAmount(Number(selectedBooking.outstandingBalance))}>
-                        Full amount
-                      </Button>
-                    </div>
+                    <Button variant="outline" size="sm" className="w-full" onClick={() => addPaymentMutation.mutate()}
+                      disabled={addPaymentMutation.isPending || payAmount <= 0}>
+                      <Plus className="w-3 h-3 mr-1" />
+                      {addPaymentMutation.isPending ? 'Recording…' : 'Record Payment'}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Override for managers */}
+                {outstanding > 0 && canOverride && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Override Reason (checkout with balance)</label>
+                    <Input value={overrideReason} onChange={e => setOverrideReason(e.target.value)}
+                      placeholder="Manager authorization reason…" />
                   </div>
                 )}
 
@@ -263,16 +223,21 @@ export default function CheckIn() {
 
                 <Button
                   className="w-full"
-                  disabled={checkInMutation.isPending || (!hasFrontDoc && !!selectedBooking.guest)}
-                  onClick={() => checkInMutation.mutate()}
+                  variant={outstanding > 0 && !overrideReason ? 'secondary' : 'primary'}
+                  disabled={checkoutMutation.isPending || (outstanding > 0 && !overrideReason && !canOverride)}
+                  onClick={() => {
+                    if (confirm(`Check out ${selectedBooking.guestName} from Room ${selectedBooking.room.number}?\n\nThis will finalise the invoice and move the room to Cleaning. This cannot be undone from the app.`)) {
+                      checkoutMutation.mutate();
+                    }
+                  }}
                 >
-                  <UserCheck className="w-4 h-4 mr-2" />
-                  {checkInMutation.isPending ? 'Processing…' : 'Process Check-In'}
+                  <LogOut className="w-4 h-4 mr-2" />
+                  {checkoutMutation.isPending ? 'Processing…' : 'Process Checkout & Generate Invoice'}
                 </Button>
 
-                {!hasFrontDoc && !selectedBooking.guest && (
+                {outstanding > 0 && !overrideReason && (
                   <p className="text-xs text-center text-amber-600">
-                    Note: Guest profile not linked — check-in proceeding without document verification
+                    {canOverride ? 'Enter override reason to checkout with outstanding balance' : 'Settle outstanding balance before checkout'}
                   </p>
                 )}
               </CardContent>
