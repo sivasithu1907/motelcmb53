@@ -81,6 +81,8 @@ const createBookingSchema = z.object({
   guestId: z.string().optional(),
   guestName: z.string().min(1, 'Guest name required'),
   guestMobile: z.string().min(9, 'Valid mobile number required'),
+  guestDocumentType: z.enum(['NIC', 'Passport']).optional(),
+  guestDocumentNumber: z.string().optional(),
   checkInDate: z.string().min(1),
   checkOutDate: z.string().min(1),
   adults: z.number().int().min(1),
@@ -178,12 +180,42 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
         throw Object.assign(new Error('Discount cannot exceed subtotal'), { statusCode: 400 });
       }
 
+      // Auto-create a Guest record if not linking an existing one,
+      // so identity documents (NIC copy) can be attached to this booking's guest.
+      let guestId = data.guestId;
+      if (!guestId) {
+        const docNumber = data.guestDocumentNumber?.trim() || '';
+        // Reuse existing guest with same document number or mobile if found
+        const existing = docNumber
+          ? await tx.guest.findFirst({ where: { documentNumber: docNumber } })
+          : await tx.guest.findFirst({ where: { mobile: data.guestMobile } });
+        if (existing) {
+          guestId = existing.id;
+        } else {
+          const masked = docNumber.length > 4
+            ? '*'.repeat(docNumber.length - 4) + docNumber.slice(-4)
+            : docNumber ? '****' : '';
+          const newGuest = await tx.guest.create({
+            data: {
+              fullName: data.guestName,
+              mobile: data.guestMobile,
+              documentType: data.guestDocumentType || 'NIC',
+              documentNumber: docNumber || `PENDING-${reference}`,
+              documentNumberMasked: masked || 'PENDING',
+              nationality: 'Sri Lankan',
+              createdById: req.user!.id,
+            },
+          });
+          guestId = newGuest.id;
+        }
+      }
+
       const booking = await tx.booking.create({
         data: {
           reference,
           buildingId: data.buildingId,
           roomId: data.roomId,
-          guestId: data.guestId,
+          guestId: guestId,
           guestName: data.guestName,
           guestMobile: data.guestMobile,
           checkInDate,
