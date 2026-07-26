@@ -129,3 +129,66 @@ usersRouter.patch('/:id', isAdmin, async (req, res, next) => {
     next(err);
   }
 });
+
+// Delete a user (admin only). If the user has linked records (audit logs,
+// bookings, payments they created), hard delete would break referential
+// integrity — in that case we deactivate instead and report it.
+usersRouter.delete('/:id', isAdmin, async (req, res, next) => {
+  try {
+    const id = String(req.params.id);
+
+    if (id === req.user!.id) {
+      res.status(400).json({ error: 'You cannot delete your own account' });
+      return;
+    }
+
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    if (target.role === 'SuperAdmin') {
+      res.status(403).json({ error: 'SuperAdmin accounts cannot be deleted' });
+      return;
+    }
+
+    try {
+      // Remove dependent rows that are safe to remove, then the user
+      await prisma.$transaction(async (tx) => {
+        await tx.session.deleteMany({ where: { userId: id } });
+        await tx.userBuildingAccess.deleteMany({ where: { userId: id } });
+        await tx.user.delete({ where: { id } });
+      });
+
+      await createAuditLog(req.user, req, {
+        action: 'USER_DELETED',
+        entityType: 'User',
+        entityId: id,
+        previousValue: { email: target.email, role: target.role },
+      });
+
+      res.json({ deleted: true });
+    } catch (err: any) {
+      // P2003 = foreign key constraint (user is referenced by bookings/payments/audit)
+      if (err?.code === 'P2003') {
+        await prisma.user.update({ where: { id }, data: { isActive: false } });
+        await prisma.session.deleteMany({ where: { userId: id } });
+        await createAuditLog(req.user, req, {
+          action: 'USER_DEACTIVATED',
+          entityType: 'User',
+          entityId: id,
+          reason: 'Delete requested but user has linked records; deactivated instead',
+        });
+        res.json({
+          deleted: false,
+          deactivated: true,
+          message: 'User has linked records (bookings/payments/audit history) and cannot be fully deleted. The account has been deactivated instead.',
+        });
+        return;
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+});
