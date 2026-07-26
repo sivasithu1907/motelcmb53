@@ -76,7 +76,7 @@ export default function BookingCalendar() {
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-2">
+      <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0"><div className="grid grid-cols-7 gap-2 min-w-[720px]">
         {days.map(day => {
           const dayBookings = getBookingsForDay(day);
           const isToday = format(day, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd');
@@ -107,7 +107,7 @@ export default function BookingCalendar() {
             </div>
           );
         })}
-      </div>
+      </div></div>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-4 text-xs text-slate-600">
