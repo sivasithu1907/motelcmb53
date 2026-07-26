@@ -1,0 +1,25 @@
+{$APP_DOMAIN:localhost} {
+    # Reverse proxy API calls to backend
+    handle /api/* {
+        reverse_proxy backend:3001
+    }
+
+    # Serve frontend (React SPA)
+    handle {
+        reverse_proxy frontend:80
+    }
+
+    # Security headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        -Server
+    }
+
+    # Access logging
+    log {
+        output stderr
+        format console
+    }
+}

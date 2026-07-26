@@ -1,0 +1,29 @@
+{
+  "name": "motel-cmb-53",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Motel CMB 53 — Room Booking Management System",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "db:generate": "cd backend && npx prisma generate",
+    "db:migrate": "cd backend && npx prisma migrate deploy",
+    "db:seed": "cd backend && npx ts-node prisma/seed.ts",
+    "db:studio": "cd backend && npx prisma studio",
+    "db:reset": "cd backend && npx prisma migrate reset --force",
+    "test": "cd backend && npm test",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:build": "docker compose build --no-cache",
+    "docker:fresh": "docker compose down -v && docker compose up -d --build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

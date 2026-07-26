@@ -1,0 +1,431 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomStatus {
+  Vacant
+  Reserved
+  Occupied
+  Cleaning
+  Maintenance
+  Blocked
+}
+
+enum BookingStatus {
+  Draft
+  Reserved
+  Confirmed
+  CheckedIn
+  CheckedOut
+  Cancelled
+  NoShow
+}
+
+enum InvoiceStatus {
+  Draft
+  Unpaid
+  PartiallyPaid
+  Paid
+  Cancelled
+  Refunded
+}
+
+enum PaymentPurpose {
+  Deposit
+  PartialPayment
+  FinalPayment
+  Refund
+}
+
+enum PaymentMethod {
+  Cash
+  Card
+  BankTransfer
+  Other
+}
+
+enum UserRole {
+  SuperAdmin
+  OwnerAdmin
+  BuildingManager
+  Operator
+  Cashier
+  ReadOnly
+}
+
+enum DocumentType {
+  NIC
+  Passport
+}
+
+enum EmploymentStatus {
+  Active
+  Inactive
+  Terminated
+}
+
+enum GuestStatus {
+  Active
+  Blacklisted
+}
+
+enum AdditionalChargeType {
+  Food
+  RoomService
+  Laundry
+  Damage
+  LateCheckout
+  Other
+}
+
+model Organization {
+  id                 String   @id @default(cuid())
+  name               String
+  code               String   @unique
+  status             String   @default("Active")
+  subscriptionStatus String   @default("Demo")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  buildings Building[]
+  users     User[]
+  settings  Setting[]
+  auditLogs AuditLog[]
+}
+
+model Building {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String   @unique
+  name           String
+  address        String
+  contactNumbers String[]
+  isActive       Boolean  @default(true)
+  bookingPrefix  String   @default("BKG")
+  invoicePrefix  String   @default("INV")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  rooms           Room[]
+  employees       Employee[]
+  bookings        Booking[]
+  userAccess      UserBuildingAccess[]
+  roomStatusHistory RoomStatusHistory[]
+  auditLogs       AuditLog[]
+  invoiceSequence InvoiceSequence?
+  bookingSequence BookingSequence?
+}
+
+model InvoiceSequence {
+  id         String   @id @default(cuid())
+  buildingId String   @unique
+  lastNumber Int      @default(0)
+  building   Building @relation(fields: [buildingId], references: [id])
+}
+
+model BookingSequence {
+  id         String   @id @default(cuid())
+  buildingId String   @unique
+  lastNumber Int      @default(0)
+  building   Building @relation(fields: [buildingId], references: [id])
+}
+
+model Room {
+  id             String     @id @default(cuid())
+  buildingId     String
+  number         String
+  capacity       Int
+  nonAcRate      Decimal    @db.Decimal(10, 2)
+  acSurcharge    Decimal    @db.Decimal(10, 2) @default(2500)
+  status         RoomStatus @default(Vacant)
+  maintenanceNote String?
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  building      Building           @relation(fields: [buildingId], references: [id])
+  bookings      Booking[]
+  statusHistory RoomStatusHistory[]
+
+  @@unique([buildingId, number])
+}
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  email          String   @unique
+  passwordHash   String
+  role           UserRole @default(Operator)
+  isActive       Boolean  @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  buildingAccess UserBuildingAccess[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  bookingsCreated Booking[]          @relation("BookingCreatedBy")
+  bookingsCheckedIn Booking[]        @relation("BookingCheckedInBy")
+  bookingsCheckedOut Booking[]       @relation("BookingCheckedOutBy")
+  paymentsCollected Payment[]
+  employee       Employee?
+}
+
+model UserBuildingAccess {
+  id         String   @id @default(cuid())
+  userId     String
+  buildingId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  building Building @relation(fields: [buildingId], references: [id])
+
+  @@unique([userId, buildingId])
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  data      String   @db.Text
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Employee {
+  id               String           @id @default(cuid())
+  buildingId       String
+  userId           String?          @unique
+  fullName         String
+  mobile           String
+  nic              String
+  jobTitle         String
+  joiningDate      DateTime
+  status           EmploymentStatus @default(Active)
+  emergencyContact String?
+  profileImage     String?
+  notes            String?          @db.Text
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id])
+  user     User?    @relation(fields: [userId], references: [id])
+}
+
+model Guest {
+  id                     String       @id @default(cuid())
+  fullName               String
+  documentType           DocumentType @default(NIC)
+  documentNumber         String
+  documentNumberMasked   String
+  mobile                 String
+  whatsapp               String?
+  address                String?
+  nationality            String       @default("Sri Lankan")
+  emergencyContactName   String?
+  emergencyContactNumber String?
+  internalNotes          String?      @db.Text
+  status                 GuestStatus  @default(Active)
+  createdById            String?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  documents GuestDocument[]
+  bookings  Booking[]
+}
+
+model GuestDocument {
+  id               String   @id @default(cuid())
+  guestId          String
+  side             String   // "front" | "back"
+  originalFilename String
+  storedFilename   String
+  mimeType         String
+  fileSize         Int
+  storagePath      String
+  uploadedById     String?
+  uploadedAt       DateTime @default(now())
+
+  guest Guest @relation(fields: [guestId], references: [id])
+}
+
+model Booking {
+  id             String        @id @default(cuid())
+  reference      String        @unique
+  organizationId String?
+  buildingId     String
+  roomId         String
+  guestId        String?
+  guestName      String
+  guestMobile    String
+  checkInDate    DateTime
+  checkOutDate   DateTime
+  actualCheckIn  DateTime?
+  actualCheckOut DateTime?
+  nights         Int
+  adults         Int           @default(1)
+  children       Int           @default(0)
+  totalGuests    Int
+  isAc           Boolean       @default(false)
+  baseNightlyRate Decimal      @db.Decimal(10, 2)
+  acSurchargePerNight Decimal  @db.Decimal(10, 2) @default(0)
+  roomCharge     Decimal       @db.Decimal(10, 2)
+  additionalCharges Decimal    @db.Decimal(10, 2) @default(0)
+  serviceChargeType String?
+  serviceChargeValue Decimal?  @db.Decimal(10, 2)
+  serviceCharge  Decimal       @db.Decimal(10, 2) @default(0)
+  discountType   String?
+  discountValue  Decimal?      @db.Decimal(10, 2)
+  discount       Decimal       @db.Decimal(10, 2) @default(0)
+  invoiceTotal   Decimal       @db.Decimal(10, 2)
+  paidAmount     Decimal       @db.Decimal(10, 2) @default(0)
+  outstandingBalance Decimal   @db.Decimal(10, 2)
+  status         BookingStatus @default(Reserved)
+  cancellationReason String?
+  capacityOverrideReason String?
+  notes          String?       @db.Text
+  createdById    String?
+  checkedInById  String?
+  checkedOutById String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  building       Building      @relation(fields: [buildingId], references: [id])
+  room           Room          @relation(fields: [roomId], references: [id])
+  guest          Guest?        @relation(fields: [guestId], references: [id])
+  createdBy      User?         @relation("BookingCreatedBy", fields: [createdById], references: [id])
+  checkedInBy    User?         @relation("BookingCheckedInBy", fields: [checkedInById], references: [id])
+  checkedOutBy   User?         @relation("BookingCheckedOutBy", fields: [checkedOutById], references: [id])
+  invoice        Invoice?
+  payments       Payment[]
+  additionalChargeItems BookingCharge[]
+}
+
+model BookingCharge {
+  id          String               @id @default(cuid())
+  bookingId   String
+  chargeType  AdditionalChargeType
+  description String?
+  amount      Decimal              @db.Decimal(10, 2)
+  addedAt     DateTime             @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+}
+
+model Invoice {
+  id               String        @id @default(cuid())
+  number           String        @unique
+  bookingId        String        @unique
+  status           InvoiceStatus @default(Draft)
+  subtotal         Decimal       @db.Decimal(10, 2)
+  serviceCharge    Decimal       @db.Decimal(10, 2) @default(0)
+  discount         Decimal       @db.Decimal(10, 2) @default(0)
+  total            Decimal       @db.Decimal(10, 2)
+  paidAmount       Decimal       @db.Decimal(10, 2) @default(0)
+  outstandingBalance Decimal     @db.Decimal(10, 2)
+  issueDate        DateTime      @default(now())
+  cancelledAt      DateTime?
+  cancellationReason String?
+  createdById      String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  booking   Booking        @relation(fields: [bookingId], references: [id])
+  items     InvoiceItem[]
+  payments  Payment[]
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Int     @default(1)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  total       Decimal @db.Decimal(10, 2)
+  sortOrder   Int     @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+}
+
+model Payment {
+  id               String         @id @default(cuid())
+  paymentReference String         @unique
+  bookingId        String
+  invoiceId        String?
+  guestName        String
+  amount           Decimal        @db.Decimal(10, 2)
+  purpose          PaymentPurpose
+  method           PaymentMethod  @default(Cash)
+  paymentDate      DateTime       @default(now())
+  collectedById    String?
+  notes            String?
+  isReversed       Boolean        @default(false)
+  reversalReason   String?
+  reversedAt       DateTime?
+  createdAt        DateTime       @default(now())
+
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+  invoice     Invoice? @relation(fields: [invoiceId], references: [id])
+  collectedBy User?    @relation(fields: [collectedById], references: [id])
+}
+
+model RoomStatusHistory {
+  id         String     @id @default(cuid())
+  buildingId String
+  roomId     String
+  fromStatus RoomStatus?
+  toStatus   RoomStatus
+  reason     String?
+  startDate  DateTime?
+  endDate    DateTime?
+  changedById String?
+  notes      String?
+  createdAt  DateTime   @default(now())
+
+  building Building @relation(fields: [buildingId], references: [id])
+  room     Room     @relation(fields: [roomId], references: [id])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  buildingId     String?
+  userId         String?
+  userRole       String?
+  action         String
+  entityType     String?
+  entityId       String?
+  previousValue  Json?
+  newValue       Json?
+  reason         String?
+  ipAddress      String?
+  sessionId      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  building     Building?     @relation(fields: [buildingId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+}
+
+model Setting {
+  id             String  @id @default(cuid())
+  organizationId String
+  buildingId     String?
+  key            String
+  value          String  @db.Text
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, buildingId, key])
+}
