@@ -35,3 +35,8 @@
   border-radius: 9999px;
 }
 .sidebar-scroll::-webkit-scrollbar-thumb:hover { background-color: #475569; }
+
+/* Prevent iOS Safari auto-zoom on input focus (fonts must be >=16px) */
+@media (max-width: 640px) {
+  input, select, textarea { font-size: 16px !important; }
+}
