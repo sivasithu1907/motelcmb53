@@ -34,6 +34,15 @@ roomsRouter.get('/', async (req, res, next) => {
       },
     });
 
+    // Numeric room-number ordering (room numbers stored as strings: "1", "2", ..., "12")
+    rooms.sort((a, b) => {
+      if (a.buildingId !== b.buildingId) return a.buildingId < b.buildingId ? -1 : 1;
+      const na = parseInt(a.number, 10);
+      const nb = parseInt(b.number, 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.number.localeCompare(b.number, undefined, { numeric: true });
+    });
+
     res.json(rooms);
   } catch (err) {
     next(err);
@@ -81,6 +90,14 @@ roomsRouter.get('/availability', async (req, res, next) => {
     const rooms = await prisma.room.findMany({
       where: { buildingId, isActive: true },
       orderBy: { number: 'asc' },
+    });
+
+    // Numeric room-number ordering
+    rooms.sort((a, b) => {
+      const na = parseInt(a.number, 10);
+      const nb = parseInt(b.number, 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.number.localeCompare(b.number, undefined, { numeric: true });
     });
 
     const result = rooms.map((room) => ({
