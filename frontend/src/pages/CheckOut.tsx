@@ -86,7 +86,8 @@ export default function CheckOut() {
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
       qc.invalidateQueries({ queryKey: ['checkout-due'] });
-      navigate(`/invoices`);
+      const invId = res.data?.invoice?.id;
+      navigate(invId ? `/invoices/${invId}` : '/invoices');
     },
     onError: (err) => setError(apiError(err)),
   });
