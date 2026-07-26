@@ -43,6 +43,7 @@ export default function CheckOut() {
   const [payAmount, setPayAmount] = useState(0);
   const [payMethod, setPayMethod] = useState('Cash');
   const [overrideReason, setOverrideReason] = useState('');
+  const [checkoutTime, setCheckoutTime] = useState(''); // empty = now
   const [error, setError] = useState('');
 
   const { data: dueList = [] } = useQuery<Booking[]>({
@@ -81,6 +82,7 @@ export default function CheckOut() {
   const checkoutMutation = useMutation({
     mutationFn: () => api.post(`/bookings/${selectedId}/checkout`, {
       overrideReason: overrideReason || undefined,
+      actualCheckOut: checkoutTime || undefined,
     }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
@@ -205,6 +207,26 @@ export default function CheckOut() {
                     </Button>
                   </div>
                 )}
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Check-Out Time</label>
+                  <div className="flex items-center gap-3">
+                    <Input
+                      type="datetime-local"
+                      value={checkoutTime}
+                      onChange={e => setCheckoutTime(e.target.value)}
+                      className="w-56"
+                    />
+                    {checkoutTime ? (
+                      <button type="button" className="text-xs text-indigo-600 hover:underline"
+                        onClick={() => setCheckoutTime('')}>
+                        Use current time
+                      </button>
+                    ) : (
+                      <span className="text-xs text-slate-500">Leave empty = now (recorded automatically)</span>
+                    )}
+                  </div>
+                </div>
 
                 {/* Override for managers */}
                 {outstanding > 0 && canOverride && (
