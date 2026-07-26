@@ -12,7 +12,7 @@ documentsRouter.use(requireAuth);
 
 const UPLOAD_DIR = process.env.UPLOAD_DIRECTORY || './uploads/documents';
 const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB || '10') * 1024 * 1024;
-const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 
 // Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) {
