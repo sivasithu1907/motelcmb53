@@ -50,7 +50,8 @@ export default function NewBooking() {
   const [guestName, setGuestName] = useState('');
   const [guestMobile, setGuestMobile] = useState('');
   const [guestNic, setGuestNic] = useState('');
-  const [nicFile, setNicFile] = useState<File | null>(null);
+  const [nicFiles, setNicFiles] = useState<(File | null)[]>([]);
+  const [customRate, setCustomRate] = useState<number | null>(null); // null = use standard rate
   const [depositAmount, setDepositAmount] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [notes, setNotes] = useState('');
@@ -89,7 +90,8 @@ export default function NewBooking() {
   });
 
   const selectedRoom = availableRooms.find(r => r.id === selectedRoomId);
-  const nonAcRate = Number(selectedRoom?.nonAcRate || 0);
+  const standardRate = Number(selectedRoom?.nonAcRate || 0);
+  const nonAcRate = customRate !== null && customRate > 0 ? customRate : standardRate;
   const acSurcharge = Number(selectedRoom?.acSurcharge || 0);
   const acSurchargePerNight = isAc ? acSurcharge : 0;
   const roomCharge = (nonAcRate + acSurchargePerNight) * nights;
@@ -99,18 +101,23 @@ export default function NewBooking() {
   const createMutation = useMutation({
     mutationFn: (data: any) => api.post('/bookings', data),
     onSuccess: async (res) => {
-      // If a NIC copy was attached, upload it against the booking's guest record
+      // Upload all attached ID copies against the booking's guest record
       const guestId = res.data?.guestId;
-      if (nicFile && guestId) {
-        try {
-          const fd = new FormData();
-          fd.append('document', nicFile);
-          fd.append('side', 'front');
-          await api.post(`/documents/guests/${guestId}`, fd, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          });
-        } catch {
-          alert('Booking created, but the NIC copy failed to upload. You can attach it again at check-in.');
+      const files = nicFiles.filter((f): f is File => !!f);
+      if (files.length > 0 && guestId) {
+        let failed = 0;
+        for (const file of files) {
+          try {
+            const fd = new FormData();
+            fd.append('document', file);
+            fd.append('side', 'front');
+            await api.post(`/documents/guests/${guestId}`, fd, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+            });
+          } catch { failed++; }
+        }
+        if (failed > 0) {
+          alert(`Booking created, but ${failed} ID cop${failed === 1 ? 'y' : 'ies'} failed to upload. You can attach them again at check-in.`);
         }
       }
       qc.invalidateQueries({ queryKey: ['rooms'] });
@@ -163,6 +170,7 @@ export default function NewBooking() {
       guestMobile,
       guestDocumentType: 'NIC',
       guestDocumentNumber: guestNic || undefined,
+      overrideNightlyRate: customRate !== null && customRate > 0 && customRate !== standardRate ? customRate : undefined,
       checkInDate: `${checkIn}T${checkInTime}:00`,
       checkOutDate: `${checkOut}T${checkOutTime}:00`,
       adults,
@@ -311,6 +319,38 @@ export default function NewBooking() {
                   })}
                 </div>
               )}
+
+              {/* Adjustable room charge — standard rate prefilled, editable per booking */}
+              {selectedRoom && (
+                <div className="border-t border-slate-100 pt-4 mt-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Room Charge per Night (LKR) {isAc && <span className="text-slate-400 font-normal">— excluding A/C surcharge</span>}
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <Input
+                      type="number"
+                      min={0}
+                      className="w-44"
+                      value={customRate !== null ? customRate : standardRate}
+                      onChange={e => setCustomRate(Number(e.target.value))}
+                    />
+                    {customRate !== null && customRate !== standardRate ? (
+                      <button type="button" className="text-xs text-indigo-600 hover:underline"
+                        onClick={() => setCustomRate(null)}>
+                        Reset to standard ({formatCurrency(standardRate)})
+                      </button>
+                    ) : (
+                      <span className="text-xs text-slate-500">Standard rate</span>
+                    )}
+                  </div>
+                  {customRate !== null && customRate !== standardRate && (
+                    <p className="text-xs text-amber-600 mt-1.5">
+                      Custom rate for this booking: {formatCurrency(customRate)}/night
+                      {isAc && ` + ${formatCurrency(acSurcharge)} A/C`} = {formatCurrency(customRate + acSurchargePerNight)}/night
+                    </p>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -361,18 +401,35 @@ export default function NewBooking() {
                     <Input value={guestNic} onChange={e => setGuestNic(e.target.value)} placeholder="NIC or passport number" />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Attach NIC / Passport Copy</label>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,application/pdf"
-                      onChange={e => setNicFile(e.target.files?.[0] || null)}
-                      className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-                    />
-                    {nicFile ? (
-                      <p className="text-xs text-emerald-600 mt-1">✓ {nicFile.name} attached — will be saved with the booking</p>
-                    ) : (
-                      <p className="text-xs text-slate-500 mt-1">Optional now — required before check-in</p>
-                    )}
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Attach ID Copies <span className="text-slate-400 font-normal">({totalGuests} guest{totalGuests !== 1 ? 's' : ''})</span>
+                    </label>
+                    <div className="space-y-2">
+                      {Array.from({ length: Math.min(totalGuests, 8) }).map((_, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 w-16 shrink-0">Guest {i + 1}{i === 0 ? ' *' : ''}</span>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,application/pdf"
+                            onChange={e => {
+                              const f = e.target.files?.[0] || null;
+                              setNicFiles(prev => {
+                                const next = [...prev];
+                                next[i] = f;
+                                return next;
+                              });
+                            }}
+                            className="block w-full text-sm text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                          />
+                          {nicFiles[i] && <span className="text-emerald-600 text-xs shrink-0">✓</span>}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      {nicFiles.filter(Boolean).length > 0
+                        ? `${nicFiles.filter(Boolean).length} of ${totalGuests} attached — saved with the booking`
+                        : 'Optional now — main guest ID required before check-in'}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -411,8 +468,13 @@ export default function NewBooking() {
                 <div className="flex justify-between"><span className="text-slate-600">Guests</span><span>{adults} adult{adults > 1 ? 's' : ''}{children > 0 ? `, ${children} child(ren)` : ''}</span></div>
                 <div className="flex justify-between"><span className="text-slate-600">A/C</span><span>{isAc ? 'Yes (+LKR 2,500/night)' : 'No'}</span></div>
                 <div className="border-t border-slate-200 pt-3 space-y-1.5">
-                  <div className="flex justify-between"><span className="text-slate-600">Base Room Charge</span><span>{formatCurrency(Number(selectedRoom.nonAcRate) * nights)}</span></div>
-                  {isAc && <div className="flex justify-between"><span className="text-slate-600">A/C Surcharge</span><span>{formatCurrency(Number(selectedRoom.acSurcharge) * nights)}</span></div>}
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">
+                      Room Charge ({formatCurrency(nonAcRate)}/night{customRate !== null && customRate !== standardRate ? ' — custom' : ''})
+                    </span>
+                    <span>{formatCurrency(nonAcRate * nights)}</span>
+                  </div>
+                  {isAc && <div className="flex justify-between"><span className="text-slate-600">A/C Surcharge</span><span>{formatCurrency(acSurcharge * nights)}</span></div>}
                   {discountAmount > 0 && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>−{formatCurrency(discountAmount)}</span></div>}
                   <div className="flex justify-between font-bold text-base border-t border-slate-200 pt-2 mt-2">
                     <span>Total</span><span>{formatCurrency(invoiceTotal)}</span>
