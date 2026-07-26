@@ -43,6 +43,7 @@ interface BookingDetail extends Booking {
   notes?: string;
   guest?: { fullName: string; documentNumberMasked: string; mobile: string };
   payments: Array<{ id: string; paymentReference: string; amount: string; purpose: string; method: string; paymentDate: string }>;
+  additionalChargeItems?: Array<{ id: string; chargeType: string; description?: string; amount: string }>;
   invoice?: { id: string; number: string } | null;
   invoices?: Array<{ id: string; number: string }>;
 }
@@ -193,6 +194,11 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
   const [payMethod, setPayMethod] = useState('Cash');
   const [payPurpose, setPayPurpose] = useState('PartialPayment');
   const [payError, setPayError] = useState('');
+  const [showChargeForm, setShowChargeForm] = useState(false);
+  const [chargeType, setChargeType] = useState('ExtraGuest');
+  const [chargeDesc, setChargeDesc] = useState('');
+  const [chargeAmount, setChargeAmount] = useState(0);
+  const [chargeError, setChargeError] = useState('');
 
   const { data: b, isLoading, refetch } = useQuery<BookingDetail>({
     queryKey: ['booking', bookingId],
@@ -214,6 +220,23 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
       setPayError('');
     },
     onError: (err: any) => setPayError(err?.response?.data?.error || 'Payment failed'),
+  });
+
+  const chargeMutation = useMutation({
+    mutationFn: () => api.post(`/bookings/${bookingId}/charges`, {
+      chargeType,
+      description: chargeDesc || undefined,
+      amount: chargeAmount,
+    }),
+    onSuccess: () => {
+      refetch();
+      qc.invalidateQueries({ queryKey: ['bookings'] });
+      setChargeAmount(0);
+      setChargeDesc('');
+      setShowChargeForm(false);
+      setChargeError('');
+    },
+    onError: (err: any) => setChargeError(err?.response?.data?.error || 'Failed to add charge'),
   });
 
   const outstanding = b ? Number(b.outstandingBalance) : 0;
@@ -280,7 +303,14 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Billing</p>
                 <div className="flex justify-between"><span className="text-slate-600">Room ({b.nights} night{b.nights !== 1 ? 's' : ''})</span><span>{formatCurrency(Number(b.baseNightlyRate) * b.nights)}</span></div>
                 {b.isAc && <div className="flex justify-between"><span className="text-slate-600">A/C Surcharge</span><span>{formatCurrency(Number(b.acSurchargePerNight) * b.nights)}</span></div>}
-                {Number(b.additionalCharges) > 0 && <div className="flex justify-between"><span className="text-slate-600">Additional</span><span>{formatCurrency(Number(b.additionalCharges))}</span></div>}
+                {(b.additionalChargeItems?.length ?? 0) > 0
+                  ? b.additionalChargeItems!.map(c => (
+                      <div key={c.id} className="flex justify-between">
+                        <span className="text-slate-600">{c.description || c.chargeType.replace(/([A-Z])/g, ' $1').trim()}</span>
+                        <span>{formatCurrency(Number(c.amount))}</span>
+                      </div>
+                    ))
+                  : Number(b.additionalCharges) > 0 && <div className="flex justify-between"><span className="text-slate-600">Additional</span><span>{formatCurrency(Number(b.additionalCharges))}</span></div>}
                 {Number(b.serviceCharge) > 0 && <div className="flex justify-between"><span className="text-slate-600">Service Charge</span><span>{formatCurrency(Number(b.serviceCharge))}</span></div>}
                 {Number(b.discount) > 0 && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>−{formatCurrency(Number(b.discount))}</span></div>}
                 <div className="flex justify-between font-bold border-t border-slate-200 pt-2"><span>Total</span><span>{formatCurrency(Number(b.invoiceTotal))}</span></div>
@@ -316,6 +346,39 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
               {b.notes && (
                 <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-sm text-amber-800">
                   <span className="font-medium">Notes: </span>{b.notes}
+                </div>
+              )}
+
+              {/* Add extra charge (extra guest, food, damage, etc.) */}
+              {showChargeForm && (
+                <div className="border-2 border-amber-200 bg-amber-50/40 rounded-xl p-4 space-y-3">
+                  <p className="text-sm font-semibold text-amber-900">Add Charge</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <Select value={chargeType} onChange={e => setChargeType(e.target.value)}>
+                      <option value="ExtraGuest">Extra Guest</option>
+                      <option value="Food">Food</option>
+                      <option value="RoomService">Room Service</option>
+                      <option value="Laundry">Laundry</option>
+                      <option value="LateCheckout">Late Checkout</option>
+                      <option value="Damage">Damage</option>
+                      <option value="Other">Other</option>
+                    </Select>
+                    <Input value={chargeDesc} onChange={e => setChargeDesc(e.target.value)}
+                      placeholder="Description (e.g. 1 extra person)" />
+                    <Input type="number" min={0} value={chargeAmount || ''}
+                      onChange={e => setChargeAmount(Number(e.target.value))}
+                      placeholder="Amount (LKR)" />
+                  </div>
+                  {chargeError && <p className="text-xs text-rose-600">{chargeError}</p>}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => chargeMutation.mutate()}
+                      disabled={chargeMutation.isPending || chargeAmount <= 0}>
+                      {chargeMutation.isPending ? 'Adding…' : 'Add Charge'}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { setShowChargeForm(false); setChargeError(''); }}>
+                      Cancel
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -369,6 +432,11 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
                 <Button size="sm" className="bg-purple-600 hover:bg-purple-700"
                   onClick={() => { onClose(); navigate(`/check-in?booking=${b.id}`); }}>
                   <LogIn className="w-4 h-4 mr-1.5" /> Check In
+                </Button>
+              )}
+              {(b.status === 'CheckedIn' || b.status === 'Reserved' || b.status === 'Confirmed') && can('record_payment') && !showChargeForm && (
+                <Button variant="outline" size="sm" onClick={() => setShowChargeForm(true)}>
+                  + Add Charge
                 </Button>
               )}
               {(b.status === 'CheckedIn' || b.status === 'Reserved' || b.status === 'Confirmed') && can('record_payment') && outstanding > 0 && !showPayForm && (
