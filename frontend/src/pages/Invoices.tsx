@@ -203,7 +203,7 @@ function InvoiceModal({ invoiceId, onClose }: { invoiceId: string; onClose: () =
         ) : (
           <>
             {/* Toolbar (hidden when printing) */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0 no-print">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-slate-100 shrink-0 no-print">
               <div className="flex items-center gap-3">
                 <h3 className="text-lg font-bold text-slate-900">Invoice {inv.number}</h3>
                 <StatusBadge status={inv.status} />
@@ -223,7 +223,7 @@ function InvoiceModal({ invoiceId, onClose }: { invoiceId: string; onClose: () =
 
             {/* Printable invoice */}
             <div className="flex-1 overflow-y-auto">
-              <div id="invoice-print" className="p-8">
+              <div id="invoice-print" className="p-5 sm:p-8">
                 {/* Letterhead */}
                 <div className="flex justify-between items-start border-b-2 border-slate-900 pb-5 mb-6">
                   <div>
