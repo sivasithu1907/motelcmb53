@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { UserCheck, Clock, AlertTriangle, Upload, CheckCircle } from 'lucide-react';
+import { UserCheck, Clock, AlertTriangle, Upload, CheckCircle, CreditCard, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import { Input, Select } from '../components/ui/Input';
 import { StatusBadge } from '../components/ui/Badge';
 import { formatCurrency, formatDateTime } from '../lib/utils';
 import { api, apiError } from '../api/client';
@@ -43,6 +43,9 @@ export default function CheckIn() {
   const [uploading, setUploading] = useState(false);
   const [uploadedFront, setUploadedFront] = useState(false);
   const [error, setError] = useState('');
+  const [payAmount, setPayAmount] = useState(0);
+  const [payMethod, setPayMethod] = useState('Cash');
+  const [payPurpose, setPayPurpose] = useState('Deposit');
 
   const { data: dueList = [] } = useQuery<Booking[]>({
     queryKey: ['checkin-due'],
@@ -54,10 +57,24 @@ export default function CheckIn() {
     refetchInterval: 30000,
   });
 
-  const { data: selectedBooking } = useQuery<Booking>({
+  const { data: selectedBooking, refetch: refetchBooking } = useQuery<Booking>({
     queryKey: ['booking', selectedId],
     queryFn: () => api.get(`/bookings/${selectedId}`).then(r => r.data),
     enabled: !!selectedId,
+  });
+
+  const addPaymentMutation = useMutation({
+    mutationFn: () => api.post('/payments', {
+      bookingId: selectedId,
+      amount: payAmount,
+      purpose: payPurpose,
+      method: payMethod,
+    }),
+    onSuccess: () => {
+      refetchBooking();
+      setPayAmount(0);
+    },
+    onError: (err) => setError(apiError(err)),
   });
 
   const hasFrontDoc = selectedBooking?.guest?.documents?.some(d => d.side === 'front') || uploadedFront;
@@ -190,9 +207,51 @@ export default function CheckIn() {
                   />
                 </div>
 
-                {Number(selectedBooking.paidAmount) > 0 && (
-                  <div className="bg-emerald-50 rounded-lg p-3 text-sm">
-                    <span className="text-emerald-700 font-medium">Deposit on file: {formatCurrency(Number(selectedBooking.paidAmount))}</span>
+                {/* Balance summary */}
+                <div className="bg-slate-50 rounded-lg p-3 space-y-1.5 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-600">Invoice Total</span><span className="font-semibold">{formatCurrency(Number(selectedBooking.invoiceTotal))}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Paid so far</span><span className="font-medium text-emerald-700">{formatCurrency(Number(selectedBooking.paidAmount))}</span></div>
+                  <div className="flex justify-between font-bold border-t border-slate-200 pt-1.5">
+                    <span>Balance Due</span>
+                    <span className={Number(selectedBooking.outstandingBalance) > 0 ? 'text-rose-700' : 'text-emerald-700'}>
+                      {formatCurrency(Number(selectedBooking.outstandingBalance))}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Collect payment at check-in */}
+                {Number(selectedBooking.outstandingBalance) > 0 && (
+                  <div className="border border-slate-200 rounded-lg p-4 space-y-3">
+                    <p className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                      <CreditCard className="w-4 h-4" /> Collect Payment (optional)
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <Input type="number" min={0} max={Number(selectedBooking.outstandingBalance)} value={payAmount || ''}
+                        onChange={e => setPayAmount(Number(e.target.value))}
+                        placeholder="Amount" />
+                      <Select value={payPurpose} onChange={e => setPayPurpose(e.target.value)}>
+                        <option value="Deposit">Deposit</option>
+                        <option value="PartialPayment">Partial</option>
+                        <option value="FinalPayment">Full Payment</option>
+                      </Select>
+                      <Select value={payMethod} onChange={e => setPayMethod(e.target.value)}>
+                        <option value="Cash">Cash</option>
+                        <option value="Card">Card</option>
+                        <option value="BankTransfer">Bank Transfer</option>
+                        <option value="Other">Other</option>
+                      </Select>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => addPaymentMutation.mutate()}
+                        disabled={addPaymentMutation.isPending || payAmount <= 0}>
+                        <Plus className="w-3 h-3 mr-1" />
+                        {addPaymentMutation.isPending ? 'Recording…' : 'Record Payment'}
+                      </Button>
+                      <Button variant="ghost" size="sm"
+                        onClick={() => setPayAmount(Number(selectedBooking.outstandingBalance))}>
+                        Full amount
+                      </Button>
+                    </div>
                   </div>
                 )}
 
