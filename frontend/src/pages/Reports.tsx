@@ -76,7 +76,7 @@ export default function Reports() {
           <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Reports</h2>
           <p className="text-sm text-slate-500 mt-1">Operational and revenue reports</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Input type="date" value={from} onChange={e => setFrom(e.target.value)} className="w-36" />
           <span className="text-slate-400">→</span>
           <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="w-36" />
@@ -87,7 +87,7 @@ export default function Reports() {
       </div>
 
       {/* Tab navigation */}
-      <div className="flex border-b border-slate-200">
+      <div className="flex border-b border-slate-200 overflow-x-auto">
         {tabs.map(t => (
           <button key={t.id}
             className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === t.id ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
