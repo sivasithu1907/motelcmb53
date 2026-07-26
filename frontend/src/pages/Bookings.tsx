@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Search, Filter, X, Users, Wind, Phone, Calendar, CreditCard, FileText, LogIn, LogOut as LogOutIcon } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/Card';
@@ -187,10 +187,33 @@ export default function Bookings() {
 function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose: () => void }) {
   const navigate = useNavigate();
   const { can } = useAuth();
+  const qc = useQueryClient();
+  const [showPayForm, setShowPayForm] = useState(false);
+  const [payAmount, setPayAmount] = useState(0);
+  const [payMethod, setPayMethod] = useState('Cash');
+  const [payPurpose, setPayPurpose] = useState('PartialPayment');
+  const [payError, setPayError] = useState('');
 
-  const { data: b, isLoading } = useQuery<BookingDetail>({
+  const { data: b, isLoading, refetch } = useQuery<BookingDetail>({
     queryKey: ['booking', bookingId],
     queryFn: () => api.get(`/bookings/${bookingId}`).then(r => r.data),
+  });
+
+  const payMutation = useMutation({
+    mutationFn: () => api.post('/payments', {
+      bookingId,
+      amount: payAmount,
+      purpose: payPurpose,
+      method: payMethod,
+    }),
+    onSuccess: () => {
+      refetch();
+      qc.invalidateQueries({ queryKey: ['bookings'] });
+      setPayAmount(0);
+      setShowPayForm(false);
+      setPayError('');
+    },
+    onError: (err: any) => setPayError(err?.response?.data?.error || 'Payment failed'),
   });
 
   const outstanding = b ? Number(b.outstandingBalance) : 0;
@@ -295,6 +318,44 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
                   <span className="font-medium">Notes: </span>{b.notes}
                 </div>
               )}
+
+              {/* Inline payment collection — stays in this popup, never touches checkout */}
+              {showPayForm && outstanding > 0 && (
+                <div className="border-2 border-indigo-200 bg-indigo-50/40 rounded-xl p-4 space-y-3">
+                  <p className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
+                    <CreditCard className="w-4 h-4" /> Collect Payment — Balance {formatCurrency(outstanding)}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <Input type="number" min={0} max={outstanding} value={payAmount || ''}
+                      onChange={e => setPayAmount(Number(e.target.value))}
+                      placeholder="Amount" />
+                    <Select value={payPurpose} onChange={e => setPayPurpose(e.target.value)}>
+                      <option value="Deposit">Deposit</option>
+                      <option value="PartialPayment">Partial Payment</option>
+                      <option value="FinalPayment">Final Payment</option>
+                    </Select>
+                    <Select value={payMethod} onChange={e => setPayMethod(e.target.value)}>
+                      <option value="Cash">Cash</option>
+                      <option value="Card">Card</option>
+                      <option value="BankTransfer">Bank Transfer</option>
+                      <option value="Other">Other</option>
+                    </Select>
+                  </div>
+                  {payError && <p className="text-xs text-rose-600">{payError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" onClick={() => payMutation.mutate()}
+                      disabled={payMutation.isPending || payAmount <= 0}>
+                      {payMutation.isPending ? 'Recording…' : `Record ${payAmount > 0 ? formatCurrency(payAmount) : 'Payment'}`}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setPayAmount(outstanding)}>
+                      Full amount
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { setShowPayForm(false); setPayError(''); }}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Footer actions */}
@@ -310,9 +371,8 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
                   <LogIn className="w-4 h-4 mr-1.5" /> Check In
                 </Button>
               )}
-              {b.status === 'CheckedIn' && can('record_payment') && outstanding > 0 && (
-                <Button variant="outline" size="sm"
-                  onClick={() => { onClose(); navigate(`/checkout?booking=${b.id}`); }}>
+              {(b.status === 'CheckedIn' || b.status === 'Reserved' || b.status === 'Confirmed') && can('record_payment') && outstanding > 0 && !showPayForm && (
+                <Button variant="outline" size="sm" onClick={() => setShowPayForm(true)}>
                   <CreditCard className="w-4 h-4 mr-1.5" /> Collect Payment
                 </Button>
               )}
