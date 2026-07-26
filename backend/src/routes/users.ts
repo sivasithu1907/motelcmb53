@@ -4,7 +4,7 @@ import * as argon2 from 'argon2';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, isAdmin, canManage } from '../middleware/auth.js';
 import { createAuditLog } from '../services/audit.js';
-import { UserRole } from '../types';
+import { UserRole } from '../types.js';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth);

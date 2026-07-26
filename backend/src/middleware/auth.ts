@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { UserRole } from '../types';
+import { UserRole } from '../types.js';
 
 export interface AuthUser {
   id: string;

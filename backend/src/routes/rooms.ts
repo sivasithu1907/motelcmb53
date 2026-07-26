@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, canManage, canWrite } from '../middleware/auth.js';
 import { createAuditLog } from '../services/audit.js';
-import { RoomStatus } from '../types';
+import { RoomStatus } from '../types.js';
 
 export const roomsRouter = Router();
 roomsRouter.use(requireAuth);

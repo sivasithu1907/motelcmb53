@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { requireAuth, canWrite, canManage } from '../middleware/auth.js';
 import { calculatePricing, toNumber } from '../services/pricing.js';
 import { createAuditLog } from '../services/audit.js';
-import { BookingStatus, RoomStatus } from '../types';
+import { BookingStatus, RoomStatus } from '../types.js';
 import { differenceInCalendarDays } from 'date-fns';
 
 export const bookingsRouter = Router();
