@@ -50,6 +50,7 @@ export default function NewBooking() {
   const [guestName, setGuestName] = useState('');
   const [guestMobile, setGuestMobile] = useState('');
   const [guestNic, setGuestNic] = useState('');
+  const [nicFile, setNicFile] = useState<File | null>(null);
   const [depositAmount, setDepositAmount] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [notes, setNotes] = useState('');
@@ -97,7 +98,21 @@ export default function NewBooking() {
 
   const createMutation = useMutation({
     mutationFn: (data: any) => api.post('/bookings', data),
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
+      // If a NIC copy was attached, upload it against the booking's guest record
+      const guestId = res.data?.guestId;
+      if (nicFile && guestId) {
+        try {
+          const fd = new FormData();
+          fd.append('document', nicFile);
+          fd.append('side', 'front');
+          await api.post(`/documents/guests/${guestId}`, fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+        } catch {
+          alert('Booking created, but the NIC copy failed to upload. You can attach it again at check-in.');
+        }
+      }
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
       navigate('/bookings');
@@ -146,6 +161,8 @@ export default function NewBooking() {
       guestId: selectedGuestId || undefined,
       guestName,
       guestMobile,
+      guestDocumentType: 'NIC',
+      guestDocumentNumber: guestNic || undefined,
       checkInDate: `${checkIn}T${checkInTime}:00`,
       checkOutDate: `${checkOut}T${checkOutTime}:00`,
       adults,
@@ -342,7 +359,20 @@ export default function NewBooking() {
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">NIC / Passport Number</label>
                     <Input value={guestNic} onChange={e => setGuestNic(e.target.value)} placeholder="NIC or passport number" />
-                    <p className="text-xs text-slate-500 mt-1">Document upload required at check-in</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Attach NIC / Passport Copy</label>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,application/pdf"
+                      onChange={e => setNicFile(e.target.files?.[0] || null)}
+                      className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                    />
+                    {nicFile ? (
+                      <p className="text-xs text-emerald-600 mt-1">✓ {nicFile.name} attached — will be saved with the booking</p>
+                    ) : (
+                      <p className="text-xs text-slate-500 mt-1">Optional now — required before check-in</p>
+                    )}
                   </div>
                 </div>
               </div>
