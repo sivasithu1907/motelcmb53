@@ -162,7 +162,7 @@ export default function CheckIn() {
                     <div className="mt-3 space-y-2">
                       <input
                         type="file"
-                        accept="image/jpeg,image/png,image/webp"
+                        accept="image/jpeg,image/png,image/webp,application/pdf"
                         onChange={e => setUploadFile(e.target.files?.[0] || null)}
                         className="text-sm text-slate-600"
                       />
