@@ -61,7 +61,7 @@ export default function DashboardLayout() {
     },
   ];
 
-  const SidebarContent = () => (
+  const sidebarContent = (
     <>
       <div className="h-16 flex items-center justify-between px-6 bg-slate-950 border-b border-slate-800 shrink-0">
         <div className="flex items-center">
@@ -90,7 +90,7 @@ export default function DashboardLayout() {
         </div>
       )}
 
-      <nav className="flex-1 px-3 py-4 space-y-6 overflow-y-auto">
+      <nav className="flex-1 px-3 py-4 space-y-6 overflow-y-auto sidebar-scroll">
         {navGroups.map(group => {
           const visibleItems = group.items.filter(item =>
             item.always || !item.perm || can(item.perm as any)
@@ -141,7 +141,7 @@ export default function DashboardLayout() {
     <div className="flex h-screen bg-slate-50 overflow-hidden">
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 bg-slate-900 shrink-0 h-full">
-        <SidebarContent />
+        {sidebarContent}
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -149,7 +149,7 @@ export default function DashboardLayout() {
         <div className="fixed inset-0 z-50 md:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
           <aside className="absolute left-0 top-0 h-full w-72 flex flex-col bg-slate-900 shadow-xl z-10">
-            <SidebarContent />
+            {sidebarContent}
           </aside>
         </div>
       )}
