@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Filter, X, Users, Wind, Phone, Calendar, CreditCard, FileText, LogIn, LogOut as LogOutIcon } from 'lucide-react';
+import { Plus, Search, Filter, X, Users, Wind, Phone, Calendar, CreditCard, FileText, LogIn, LogOut as LogOutIcon, Upload, IdCard, CheckCircle2 } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { StatusBadge } from '../components/ui/Badge';
 import { Input, Select } from '../components/ui/Input';
 import { formatCurrency, formatDate, formatDateTime } from '../lib/utils';
 import { useAuth } from '../lib/auth';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import { api } from '../api/client';
 
 interface Booking {
@@ -41,7 +42,7 @@ interface BookingDetail extends Booking {
   actualCheckIn?: string;
   actualCheckOut?: string;
   notes?: string;
-  guest?: { fullName: string; documentNumberMasked: string; mobile: string };
+  guest?: { id: string; fullName: string; documentNumberMasked: string; mobile: string; documents?: Array<{ id: string; side: string; originalFilename: string; uploadedAt: string }> };
   payments: Array<{ id: string; paymentReference: string; amount: string; purpose: string; method: string; paymentDate: string }>;
   additionalChargeItems?: Array<{ id: string; chargeType: string; description?: string; amount: string }>;
   invoice?: { id: string; number: string } | null;
@@ -189,6 +190,7 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
   const navigate = useNavigate();
   const { can } = useAuth();
   const qc = useQueryClient();
+  useEscapeKey(onClose);
   const [showPayForm, setShowPayForm] = useState(false);
   const [payAmount, setPayAmount] = useState(0);
   const [payMethod, setPayMethod] = useState('Cash');
@@ -199,6 +201,9 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
   const [chargeDesc, setChargeDesc] = useState('');
   const [chargeAmount, setChargeAmount] = useState(0);
   const [chargeError, setChargeError] = useState('');
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [docUploading, setDocUploading] = useState(false);
+  const [docError, setDocError] = useState('');
 
   const { data: b, isLoading, refetch } = useQuery<BookingDetail>({
     queryKey: ['booking', bookingId],
@@ -238,6 +243,30 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
     },
     onError: (err: any) => setChargeError(err?.response?.data?.error || 'Failed to add charge'),
   });
+
+  const uploadDoc = async () => {
+    if (!docFile || !b?.guest?.id) return;
+    setDocUploading(true);
+    setDocError('');
+    try {
+      const existingCount = b.guest.documents?.length || 0;
+      // First doc uses 'front' (the required/primary ID); subsequent ones get
+      // their own slot (guest-2, guest-3, …) so multiple ID copies can coexist.
+      const side = existingCount === 0 ? 'front' : `guest-${existingCount + 1}`;
+      const fd = new FormData();
+      fd.append('document', docFile);
+      fd.append('side', side);
+      await api.post(`/documents/guests/${b.guest.id}`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setDocFile(null);
+      refetch();
+    } catch (err: any) {
+      setDocError(err?.response?.data?.error || 'Upload failed');
+    } finally {
+      setDocUploading(false);
+    }
+  };
 
   const outstanding = b ? Number(b.outstandingBalance) : 0;
   const invoiceId = b?.invoice?.id || b?.invoices?.[0]?.id;
@@ -296,6 +325,45 @@ function BookingDetailModal({ bookingId, onClose }: { bookingId: string; onClose
                   <span className="font-mono text-xs text-slate-500">ID: {b.guest.documentNumberMasked}</span>
                 )}
                 {b.actualCheckIn && <span className="text-xs">Checked in {formatDateTime(b.actualCheckIn)}</span>}
+              </div>
+
+              {/* ID copies — attach any time, not just at booking/check-in */}
+              <div className="border border-slate-200 rounded-xl p-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <IdCard className="w-3.5 h-3.5" /> ID Copies
+                </p>
+                {!b.guest?.id ? (
+                  <p className="text-sm text-slate-400">No guest profile linked to this booking.</p>
+                ) : (
+                  <>
+                    {(b.guest.documents?.length ?? 0) > 0 && (
+                      <div className="space-y-1.5 mb-3">
+                        {b.guest.documents!.map(doc => (
+                          <div key={doc.id} className="flex items-center justify-between text-sm bg-slate-50 rounded-lg px-3 py-2">
+                            <span className="flex items-center gap-2 text-slate-700 truncate">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span className="truncate">{doc.originalFilename}</span>
+                            </span>
+                            <span className="text-xs text-slate-400 shrink-0 ml-2">{formatDateTime(doc.uploadedAt)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,application/pdf"
+                        onChange={e => setDocFile(e.target.files?.[0] || null)}
+                        className="flex-1 text-sm text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                      />
+                      <Button size="sm" variant="outline" onClick={uploadDoc} disabled={!docFile || docUploading}>
+                        <Upload className="w-3.5 h-3.5 mr-1" />
+                        {docUploading ? 'Uploading…' : 'Attach'}
+                      </Button>
+                    </div>
+                    {docError && <p className="text-xs text-rose-600 mt-1.5">{docError}</p>}
+                  </>
+                )}
               </div>
 
               {/* Billing breakdown */}
