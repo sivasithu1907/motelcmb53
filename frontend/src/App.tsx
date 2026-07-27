@@ -13,6 +13,7 @@ import Bookings from './pages/Bookings';
 import InHouseGuests from './pages/InHouseGuests';
 import Guests from './pages/Guests';
 import CheckIn from './pages/CheckIn';
+import CheckInPayment from './pages/CheckInPayment';
 import CheckOut from './pages/CheckOut';
 import Invoices from './pages/Invoices';
 import Payments from './pages/Payments';
@@ -69,6 +70,8 @@ function AppRoutes() {
         <Route path="in-house" element={<InHouseGuests />} />
         <Route path="guests" element={<Guests />} />
         <Route path="check-in" element={<CheckIn />} />
+        <Route path="check-in-payment" element={<CheckInPayment />} />
+        <Route path="check-in-payment/:invoiceId" element={<CheckInPayment />} />
         <Route path="checkout" element={<CheckOut />} />
         <Route path="invoices" element={<Invoices />} />
         <Route path="invoices/:id" element={<Invoices />} />
