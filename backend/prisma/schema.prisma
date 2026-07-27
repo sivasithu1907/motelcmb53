@@ -97,6 +97,7 @@ model Organization {
   users     User[]
   settings  Setting[]
   auditLogs AuditLog[]
+  guests    Guest[]
 }
 
 model Building {
@@ -121,6 +122,7 @@ model Building {
   auditLogs       AuditLog[]
   invoiceSequence InvoiceSequence?
   bookingSequence BookingSequence?
+  paymentSequence PaymentSequence?
 }
 
 model InvoiceSequence {
@@ -131,6 +133,13 @@ model InvoiceSequence {
 }
 
 model BookingSequence {
+  id         String   @id @default(cuid())
+  buildingId String   @unique
+  lastNumber Int      @default(0)
+  building   Building @relation(fields: [buildingId], references: [id])
+}
+
+model PaymentSequence {
   id         String   @id @default(cuid())
   buildingId String   @unique
   lastNumber Int      @default(0)
@@ -225,6 +234,7 @@ model Employee {
 
 model Guest {
   id                     String       @id @default(cuid())
+  organizationId         String
   fullName               String
   documentType           DocumentType @default(NIC)
   documentNumber         String
@@ -241,8 +251,13 @@ model Guest {
   createdAt              DateTime     @default(now())
   updatedAt              DateTime     @updatedAt
 
-  documents GuestDocument[]
-  bookings  Booking[]
+  organization  Organization    @relation(fields: [organizationId], references: [id])
+  documents     GuestDocument[]
+  bookings      Booking[]
+
+  @@index([organizationId])
+  @@index([documentNumber])
+  @@index([mobile])
 }
 
 model GuestDocument {
