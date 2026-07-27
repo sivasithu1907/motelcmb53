@@ -49,6 +49,30 @@ invoicesRouter.get('/', async (req, res, next) => {
   }
 });
 
+// Get invoice by booking ID (used from InHouseGuests and post-checkin flow)
+invoicesRouter.get('/by-booking/:bookingId', async (req, res, next) => {
+  try {
+    const invoice = await prisma.invoice.findUnique({
+      where: { bookingId: String(req.params.bookingId) },
+      include: {
+        items: { orderBy: { sortOrder: 'asc' } },
+        payments: { where: { isReversed: false }, orderBy: { paymentDate: 'asc' } },
+        booking: {
+          include: {
+            room: true,
+            building: true,
+            guest: { select: { fullName: true, documentNumberMasked: true, mobile: true } },
+          },
+        },
+      },
+    });
+    if (!invoice) { res.status(404).json({ error: 'No invoice found for this booking' }); return; }
+    res.json(invoice);
+  } catch (err) {
+    next(err);
+  }
+});
+
 invoicesRouter.get('/:id', async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
