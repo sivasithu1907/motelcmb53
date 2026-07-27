@@ -48,7 +48,7 @@ employeesRouter.post('/', canManage, async (req, res, next) => {
   try {
     const data = employeeSchema.parse(req.body);
     const employee = await prisma.employee.create({
-      data: { ...data, joiningDate: new Date(data.joiningDate) },
+      data: { ...data, joiningDate: new Date(data.joiningDate) } as any,
       include: { building: { select: { name: true } } },
     });
     res.status(201).json(employee);
@@ -61,8 +61,8 @@ employeesRouter.patch('/:id', canManage, async (req, res, next) => {
   try {
     const data = employeeSchema.partial().parse(req.body);
     const employee = await prisma.employee.update({
-      where: { id: req.params.id },
-      data: { ...data, joiningDate: data.joiningDate ? new Date(data.joiningDate) : undefined },
+      where: { id: String(req.params.id) },
+      data: { ...data, joiningDate: data.joiningDate ? new Date(data.joiningDate) : undefined } as any,
     });
     res.json(employee);
   } catch (err) {
