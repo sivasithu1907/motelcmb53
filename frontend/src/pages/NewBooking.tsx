@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { differenceInCalendarDays, format, addDays } from 'date-fns';
@@ -57,6 +57,9 @@ export default function NewBooking() {
   const [notes, setNotes] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [checkInNow, setCheckInNow] = useState(false);
+  // Ref so onSuccess always sees the current checkInNow value
+  const checkInNowRef = useRef(false);
+  checkInNowRef.current = checkInNow;
 
   const nights = Math.max(1, differenceInCalendarDays(new Date(checkOut), new Date(checkIn)));
   const totalGuests = adults + children;
@@ -122,7 +125,20 @@ export default function NewBooking() {
       }
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
-      navigate('/bookings');
+
+      // Walk-in: attempt immediate check-in now that document is uploaded
+      const bookingId = res.data?.id;
+      if (checkInNowRef.current && bookingId) {
+        try {
+          await api.post(`/bookings/${bookingId}/check-in`, {});
+          navigate('/bookings');
+        } catch {
+          // Check-in requires document — redirect to Check-In page to complete
+          navigate(`/check-in?bookingId=${bookingId}`);
+        }
+      } else {
+        navigate('/bookings');
+      }
     },
     onError: (err) => setErrors({ submit: apiError(err) }),
   });
@@ -181,7 +197,7 @@ export default function NewBooking() {
       depositAmount: depositAmount > 0 ? depositAmount : undefined,
       depositMethod: 'Cash',
       notes,
-      status: checkInNow ? 'CheckedIn' : 'Reserved',
+      status: checkInNow ? 'Confirmed' : 'Reserved',  // CheckedIn handled via separate /check-in endpoint
     });
   };
 
