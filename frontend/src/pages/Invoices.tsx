@@ -9,6 +9,8 @@ import { Input, Select } from '../components/ui/Input';
 import { formatCurrency, formatDate, formatDateTime } from '../lib/utils';
 import { useAuth } from '../lib/auth';
 import { api } from '../api/client';
+import { printHtmlDocument, escapeHtml } from '../lib/print';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface Invoice {
   id: string;
@@ -176,21 +178,92 @@ export default function Invoices() {
 }
 
 function InvoiceModal({ invoiceId, onClose }: { invoiceId: string; onClose: () => void }) {
+  useEscapeKey(onClose);
   const { data: inv, isLoading } = useQuery<InvoiceDetail>({
     queryKey: ['invoice', invoiceId],
     queryFn: () => api.get(`/invoices/${invoiceId}`).then(r => r.data),
   });
 
   const handlePrint = () => {
-    document.body.classList.add('printing-invoice');
-    const cleanup = () => {
-      document.body.classList.remove('printing-invoice');
-      window.removeEventListener('afterprint', cleanup);
-    };
-    window.addEventListener('afterprint', cleanup);
-    window.print();
-    // Fallback cleanup for browsers that don't fire afterprint reliably
-    setTimeout(cleanup, 2000);
+    if (!inv) return;
+    const nights = inv.booking.nights;
+    const itemRows = inv.items.map(item => `
+      <tr>
+        <td>${escapeHtml(item.description)}</td>
+        <td class="text-center">${item.quantity}</td>
+        <td class="text-right">${formatCurrency(Number(item.unitPrice))}</td>
+        <td class="text-right">${formatCurrency(Number(item.amount))}</td>
+      </tr>`).join('');
+
+    const paymentRows = inv.payments.length > 0 ? `
+      <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:24px 0 8px;">Payments Received</h3>
+      <table>
+        <tbody>
+          ${inv.payments.map(p => `
+            <tr>
+              <td class="muted" style="font-family:monospace;font-size:12px;">${escapeHtml(p.paymentReference)}</td>
+              <td>${escapeHtml(p.purpose)} · ${escapeHtml(p.method)}</td>
+              <td class="muted">${formatDateTime(p.paymentDate)}</td>
+              <td class="text-right">${formatCurrency(Number(p.amount))}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>` : '';
+
+    const html = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0f172a;padding-bottom:20px;margin-bottom:24px;">
+        <div>
+          <h1 style="font-size:26px;font-weight:900;margin:0;letter-spacing:-0.02em;">MOTEL CMB 53</h1>
+          <p style="margin:4px 0 0;color:#475569;">${escapeHtml(inv.booking.building.name)}</p>
+        </div>
+        <div style="text-align:right;">
+          <p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:600;">Invoice</p>
+          <p style="margin:2px 0 0;font-size:20px;font-weight:700;font-family:monospace;">${escapeHtml(inv.number)}</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b;">${formatDate(inv.issueDate)}</p>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:32px;margin-bottom:24px;font-size:14px;">
+        <div>
+          <p style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;font-weight:600;margin:0 0 6px;">Billed To</p>
+          <p style="margin:0;font-weight:600;">${escapeHtml(inv.booking.guest?.fullName || inv.booking.guestName)}</p>
+          <p style="margin:2px 0 0;color:#475569;">${escapeHtml(inv.booking.guestMobile)}</p>
+          ${inv.booking.guest?.documentNumberMasked ? `<p style="margin:2px 0 0;font-size:12px;font-family:monospace;color:#64748b;">ID: ${escapeHtml(inv.booking.guest.documentNumberMasked)}</p>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <p style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;font-weight:600;margin:0 0 6px;">Stay Details</p>
+          <p style="margin:0;font-weight:600;">Room ${escapeHtml(inv.booking.room.number)} · ${inv.booking.isAc ? 'A/C' : 'Non-A/C'}</p>
+          <p style="margin:2px 0 0;color:#475569;">${formatDate(inv.booking.checkInDate)} &rarr; ${formatDate(inv.booking.checkOutDate)}</p>
+          <p style="margin:2px 0 0;font-size:12px;color:#64748b;">${nights} night${nights !== 1 ? 's' : ''} · Booking ${escapeHtml(inv.booking.reference)}</p>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Description</th><th class="text-center" style="width:60px;">Qty</th><th class="text-right" style="width:110px;">Unit</th><th class="text-right" style="width:120px;">Amount</th></tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+        <table style="width:280px;">
+          <tbody>
+            <tr><td class="muted">Subtotal</td><td class="text-right">${formatCurrency(Number(inv.subtotal))}</td></tr>
+            ${Number(inv.serviceCharge) > 0 ? `<tr><td class="muted">Service Charge</td><td class="text-right">${formatCurrency(Number(inv.serviceCharge))}</td></tr>` : ''}
+            ${Number(inv.discount) > 0 ? `<tr><td style="color:#047857;">Discount</td><td class="text-right" style="color:#047857;">−${formatCurrency(Number(inv.discount))}</td></tr>` : ''}
+            <tr class="total-row"><td>Total</td><td class="text-right">${formatCurrency(Number(inv.total))}</td></tr>
+            <tr><td style="color:#047857;">Paid</td><td class="text-right" style="color:#047857;">${formatCurrency(Number(inv.paidAmount))}</td></tr>
+            <tr><td style="font-weight:700;color:${Number(inv.outstandingBalance) > 0 ? '#be123c' : '#047857'};">Balance Due</td><td class="text-right" style="font-weight:700;color:${Number(inv.outstandingBalance) > 0 ? '#be123c' : '#047857'};">${formatCurrency(Number(inv.outstandingBalance))}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      ${paymentRows}
+
+      <p style="text-align:center;font-size:11px;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:16px;margin-top:32px;">
+        Thank you for staying with Motel CMB 53 &middot; This is a computer-generated invoice
+      </p>`;
+
+    printHtmlDocument(`Invoice ${inv.number}`, html);
   };
 
   return (
