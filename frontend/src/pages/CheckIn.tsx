@@ -160,12 +160,14 @@ export default function CheckIn() {
     mutationFn: () => api.post(`/bookings/${selectedId}/check-in`, {
       roomConditionNotes: roomNotes || undefined,
     }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
       qc.invalidateQueries({ queryKey: ['checkin-due'] });
       qc.invalidateQueries({ queryKey: ['in-house'] });
-      navigate('/rooms');
+      // Redirect to invoice & payment screen after check-in
+      const invoiceId = res.data?.invoiceId;
+      navigate(invoiceId ? `/check-in-payment/${invoiceId}?from=checkin` : '/in-house');
     },
     onError: (err) => setError(apiError(err)),
   });
