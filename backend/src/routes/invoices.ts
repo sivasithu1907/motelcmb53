@@ -52,7 +52,7 @@ invoicesRouter.get('/', async (req, res, next) => {
 invoicesRouter.get('/:id', async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
         payments: { where: { isReversed: false }, orderBy: { paymentDate: 'asc' } },
@@ -78,14 +78,14 @@ invoicesRouter.post('/:id/cancel', canManage, async (req, res, next) => {
     const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
 
     const invoice = await prisma.invoice.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: { booking: { select: { buildingId: true } } },
     });
     if (!invoice) { res.status(404).json({ error: 'Invoice not found' }); return; }
     if (invoice.status === 'Cancelled') { res.status(422).json({ error: 'Already cancelled' }); return; }
 
     const updated = await prisma.invoice.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: {
         status: 'Cancelled',
         cancelledAt: new Date(),
