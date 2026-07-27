@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
 import { useAuth } from '../lib/auth';
 import { api, apiError } from '../api/client';
+import { setCurrentCurrency } from '../lib/utils';
 
 export default function SystemSettings() {
   const { can } = useAuth();
@@ -30,6 +31,8 @@ export default function SystemSettings() {
     mutationFn: () => api.put('/settings', form),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: ['settings-currency'] });
+      if (form.currency) setCurrentCurrency(form.currency);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     },
@@ -92,7 +95,20 @@ export default function SystemSettings() {
             ))}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Currency</label>
-              <Input value={form.currency || 'LKR'} onChange={e => set('currency', e.target.value)} />
+              <Select value={form.currency || 'LKR'} onChange={e => set('currency', e.target.value)}>
+                <option value="LKR">LKR — Sri Lankan Rupee</option>
+                <option value="USD">USD — US Dollar</option>
+                <option value="EUR">EUR — Euro</option>
+                <option value="GBP">GBP — British Pound</option>
+                <option value="INR">INR — Indian Rupee</option>
+                <option value="AUD">AUD — Australian Dollar</option>
+                <option value="CAD">CAD — Canadian Dollar</option>
+                <option value="SGD">SGD — Singapore Dollar</option>
+                <option value="AED">AED — UAE Dirham</option>
+                <option value="JPY">JPY — Japanese Yen</option>
+                <option value="CNY">CNY — Chinese Yuan</option>
+                <option value="MVR">MVR — Maldivian Rufiyaa</option>
+              </Select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Timezone</label>
