@@ -77,7 +77,10 @@ invoicesRouter.post('/:id/cancel', canManage, async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
 
-    const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id } });
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: req.params.id },
+      include: { booking: { select: { buildingId: true } } },
+    });
     if (!invoice) { res.status(404).json({ error: 'Invoice not found' }); return; }
     if (invoice.status === 'Cancelled') { res.status(422).json({ error: 'Already cancelled' }); return; }
 
@@ -91,6 +94,7 @@ invoicesRouter.post('/:id/cancel', canManage, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: invoice.booking.buildingId,
       action: 'INVOICE_CANCELLED',
       entityType: 'Invoice',
       entityId: String(req.params.id),
