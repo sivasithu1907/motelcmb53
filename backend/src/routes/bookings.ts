@@ -361,6 +361,8 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
         include: {
           guest: { include: { documents: true } },
           room: true,
+          building: { select: { invoicePrefix: true, code: true } },
+          payments: { where: { isReversed: false } },
         },
       });
 
@@ -446,18 +448,140 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
         },
       });
 
-      return updatedBooking;
+      // ── Create or reuse invoice ────────────────────────────────────────────
+      const existingInvoice = await tx.invoice.findUnique({
+        where: { bookingId: booking.id },
+      });
+
+      let invoiceId: string;
+
+      if (existingInvoice && existingInvoice.status !== 'Cancelled') {
+        // Reuse the existing active invoice — do not create a duplicate
+        invoiceId = existingInvoice.id;
+        // Link any unlinked payments to this invoice
+        await tx.payment.updateMany({
+          where: { bookingId: booking.id, invoiceId: null },
+          data: { invoiceId },
+        });
+      } else {
+        // Generate next invoice number atomically
+        await tx.invoiceSequence.upsert({
+          where: { buildingId: booking.buildingId },
+          update: { lastNumber: { increment: 1 } },
+          create: { buildingId: booking.buildingId, lastNumber: 1 },
+        });
+        const seqData = await tx.invoiceSequence.findUnique({
+          where: { buildingId: booking.buildingId },
+        });
+        const invoiceNumber = `${booking.building!.invoicePrefix}-${String(seqData!.lastNumber).padStart(6, '0')}`;
+
+        // Calculate paid amount from existing payment records
+        const paidAmount = booking.payments.reduce((s, p) => s + toNumber(p.amount), 0);
+        const invoiceTotal = toNumber(booking.invoiceTotal);
+        const outstanding = Math.max(0, invoiceTotal - paidAmount);
+        const invoiceStatus = paidAmount === 0 ? 'Unpaid' : paidAmount >= invoiceTotal ? 'Paid' : 'PartiallyPaid';
+        const subtotal = toNumber(booking.roomCharge) + toNumber(booking.additionalCharges);
+
+        const newInvoice = await tx.invoice.create({
+          data: {
+            number: invoiceNumber,
+            bookingId: booking.id,
+            status: invoiceStatus as any,
+            subtotal,
+            serviceCharge: toNumber(booking.serviceCharge),
+            discount: toNumber(booking.discount),
+            total: invoiceTotal,
+            paidAmount,
+            outstandingBalance: outstanding,
+            issueDate: new Date(),
+            createdById: req.user!.id,
+          },
+        });
+
+        invoiceId = newInvoice.id;
+
+        // Build invoice line items
+        const items: any[] = [];
+        let sortOrder = 1;
+        const baseRate = toNumber(booking.baseNightlyRate);
+        const n = booking.nights;
+
+        items.push({
+          invoiceId,
+          description: `Room ${booking.room.number} · ${n} night${n !== 1 ? 's' : ''} @ LKR ${baseRate.toLocaleString()}`,
+          quantity: n,
+          unitPrice: baseRate,
+          total: baseRate * n,
+          sortOrder: sortOrder++,
+        });
+
+        if (booking.isAc && toNumber(booking.acSurchargePerNight) > 0) {
+          const acRate = toNumber(booking.acSurchargePerNight);
+          items.push({
+            invoiceId,
+            description: `A/C Surcharge · ${n} night${n !== 1 ? 's' : ''} @ LKR ${acRate.toLocaleString()}`,
+            quantity: n,
+            unitPrice: acRate,
+            total: acRate * n,
+            sortOrder: sortOrder++,
+          });
+        }
+
+        if (toNumber(booking.serviceCharge) > 0) {
+          const sc = toNumber(booking.serviceCharge);
+          items.push({
+            invoiceId,
+            description: 'Service Charge',
+            quantity: 1,
+            unitPrice: sc,
+            total: sc,
+            sortOrder: sortOrder++,
+          });
+        }
+
+        if (toNumber(booking.discount) > 0) {
+          const disc = toNumber(booking.discount);
+          items.push({
+            invoiceId,
+            description: 'Discount',
+            quantity: 1,
+            unitPrice: -disc,
+            total: -disc,
+            sortOrder: sortOrder++,
+          });
+        }
+
+        if (items.length > 0) {
+          await tx.invoiceItem.createMany({ data: items });
+        }
+
+        // Link existing payments (e.g., deposit collected at booking) to this invoice
+        await tx.payment.updateMany({
+          where: { bookingId: booking.id, invoiceId: null },
+          data: { invoiceId },
+        });
+      }
+
+      return { booking: updatedBooking, invoiceId };
     });
 
     await createAuditLog(req.user, req, {
-      buildingId: result.buildingId,
+      buildingId: result.booking.buildingId,
       action: 'BOOKING_CHECKED_IN',
       entityType: 'Booking',
       entityId: String(req.params.id),
-      newValue: { reference: result.reference, actualCheckIn: result.actualCheckIn },
+      newValue: { reference: result.booking.reference, actualCheckIn: result.booking.actualCheckIn },
     });
 
-    res.json(result);
+    await createAuditLog(req.user, req, {
+      buildingId: result.booking.buildingId,
+      action: 'INVOICE_CREATED',
+      entityType: 'Invoice',
+      entityId: result.invoiceId,
+      newValue: { invoiceId: result.invoiceId, bookingReference: result.booking.reference },
+    });
+
+    res.json({ ...result.booking, invoiceId: result.invoiceId });
   } catch (err) {
     next(err);
   }
