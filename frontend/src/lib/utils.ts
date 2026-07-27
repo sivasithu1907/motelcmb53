@@ -6,9 +6,22 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Module-level currency setting so every existing formatCurrency() call site
+// picks up the org's configured currency without needing prop drilling or
+// context everywhere. Set once via setCurrentCurrency() after settings load.
+let _currentCurrency = 'LKR';
+
+export function setCurrentCurrency(code: string) {
+  if (code && typeof code === 'string') _currentCurrency = code;
+}
+
+export function getCurrentCurrency(): string {
+  return _currentCurrency;
+}
+
 export function formatCurrency(amount: number | string | undefined | null): string {
   const n = Number(amount ?? 0);
-  return `LKR ${n.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${_currentCurrency} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function formatDate(date: string | Date | undefined | null): string {
