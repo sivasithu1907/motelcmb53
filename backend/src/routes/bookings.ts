@@ -1,11 +1,27 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, canWrite, canManage } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
+import {
+  canCreateBooking,
+  canEditBooking,
+  canCancelBooking,
+  canCheckIn,
+  canCheckOut,
+  canMarkNoShow,
+  canExtendStay,
+  canChangeRoom,
+  canAddBookingCharge,
+  canOverrideRate,
+} from '../middleware/permissions.js';
 import { calculatePricing, toNumber } from '../services/pricing.js';
 import { createAuditLog } from '../services/audit.js';
 import { BookingStatus, RoomStatus } from '../types.js';
 import { differenceInCalendarDays } from 'date-fns';
+
+// Legacy aliases kept so existing route uses below compile without mass refactor
+const canWrite = canCreateBooking;
+const canManage = canCancelBooking;
 
 export const bookingsRouter = Router();
 bookingsRouter.use(requireAuth);
@@ -96,7 +112,10 @@ const createBookingSchema = z.object({
   depositAmount: z.number().min(0).optional(),
   depositMethod: z.enum(['Cash', 'Card', 'BankTransfer', 'Other']).optional(),
   notes: z.string().optional(),
-  status: z.enum(['Reserved', 'Confirmed', 'CheckedIn']).default('Reserved'),
+  // NOTE: CheckedIn is intentionally excluded — bookings cannot be created
+  // directly in a checked-in state. Use the dedicated POST /:id/check-in
+  // endpoint after creating the reservation and uploading identity documents.
+  status: z.enum(['Draft', 'Reserved', 'Confirmed']).default('Reserved'),
   capacityOverrideReason: z.string().optional(),
 });
 
@@ -165,6 +184,18 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
       await tx.bookingSequence.update({ where: { buildingId: data.buildingId }, data: { lastNumber: nextNum } });
       const reference = `${building.bookingPrefix}-${String(nextNum).padStart(4, '0')}`;
 
+      // Rate override: only managers and above may override the room rate
+      if (data.overrideNightlyRate !== undefined && data.overrideNightlyRate > 0) {
+        const level = { SuperAdmin: 100, OwnerAdmin: 90, BuildingManager: 70, Operator: 50, Cashier: 40, ReadOnly: 10 };
+        const userLevel = level[req.user!.role] ?? 0;
+        if (userLevel < 70) {
+          throw Object.assign(
+            new Error('Only Building Managers and above may override the room rate'),
+            { statusCode: 403 },
+          );
+        }
+      }
+
       // Pricing
       const pricing = calculatePricing({
         baseNightlyRate: data.overrideNightlyRate !== undefined && data.overrideNightlyRate > 0
@@ -185,26 +216,33 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
 
       // Auto-create a Guest record if not linking an existing one,
       // so identity documents (NIC copy) can be attached to this booking's guest.
+      // Organization-scoped: guest lookup and creation always includes organizationId.
       let guestId = data.guestId;
       if (!guestId) {
-        const docNumber = data.guestDocumentNumber?.trim() || '';
-        // Reuse existing guest with same document number or mobile if found
+        const docNumber = (data.guestDocumentNumber ?? '').trim();
+        const orgId = building.organizationId;
+
+        // Reuse existing guest with same document number (within org) or fall back to mobile
         const existing = docNumber
-          ? await tx.guest.findFirst({ where: { documentNumber: docNumber } })
-          : await tx.guest.findFirst({ where: { mobile: data.guestMobile } });
+          ? await tx.guest.findFirst({ where: { organizationId: orgId, documentNumber: docNumber } })
+          : await tx.guest.findFirst({ where: { organizationId: orgId, mobile: data.guestMobile } });
+
         if (existing) {
           guestId = existing.id;
         } else {
+          // Document number is not validated here — it will be validated/confirmed
+          // at check-in. Walk-in bookings must upload ID before calling POST /:id/check-in.
           const masked = docNumber.length > 4
             ? '*'.repeat(docNumber.length - 4) + docNumber.slice(-4)
-            : docNumber ? '****' : '';
+            : docNumber ? '****' : 'PENDING';
           const newGuest = await tx.guest.create({
             data: {
+              organizationId: orgId,
               fullName: data.guestName,
               mobile: data.guestMobile,
               documentType: data.guestDocumentType || 'NIC',
               documentNumber: docNumber || `PENDING-${reference}`,
-              documentNumberMasked: masked || 'PENDING',
+              documentNumberMasked: masked,
               nationality: 'Sri Lankan',
               createdById: req.user!.id,
             },
@@ -216,6 +254,7 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
       const booking = await tx.booking.create({
         data: {
           reference,
+          organizationId: building.organizationId,
           buildingId: data.buildingId,
           roomId: data.roomId,
           guestId: guestId,
@@ -245,8 +284,7 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
           capacityOverrideReason: data.capacityOverrideReason,
           notes: data.notes,
           createdById: req.user!.id,
-          actualCheckIn: data.status === 'CheckedIn' ? new Date() : undefined,
-          checkedInById: data.status === 'CheckedIn' ? req.user!.id : undefined,
+          // No immediate check-in at creation time — status can only be Draft/Reserved/Confirmed
         },
       });
 
@@ -274,30 +312,14 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
         });
       }
 
-      // If checking in immediately, update room status
-      if (data.status === 'CheckedIn') {
-        await tx.room.update({ where: { id: data.roomId }, data: { status: 'Occupied' } });
-        await tx.roomStatusHistory.create({
-          data: {
-            buildingId: data.buildingId,
-            roomId: data.roomId,
-            fromStatus: room.status,
-            toStatus: 'Occupied',
-            reason: 'Check-in',
-            changedById: req.user!.id,
-          },
-        });
-      }
-
       return { booking, pricing };
     });
 
     await createAuditLog(req.user, req, {
-      buildingId: result.booking.buildingId,
+      buildingId: data.buildingId,
       action: 'BOOKING_CREATED',
       entityType: 'Booking',
       entityId: result.booking.id,
-      buildingId: data.buildingId,
       newValue: { reference: result.booking.reference, status: result.booking.status },
     });
 
@@ -326,17 +348,40 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
         throw Object.assign(new Error(`Cannot check in: booking is ${booking.status}`), { statusCode: 422 });
       }
 
-      // Document check
-      if (booking.guest) {
-        const hasFrontDoc = booking.guest.documents.some((d) => d.side === 'front');
-        if (!hasFrontDoc) {
-          throw Object.assign(new Error('Identity document (front) required before check-in'), { statusCode: 422 });
-        }
-      } else {
-        // Walk-in without guest record - check if mobile and doc number set
-        if (!booking.guestMobile) {
-          throw Object.assign(new Error('Guest mobile number required before check-in'), { statusCode: 422 });
-        }
+      // Document check — every check-in requires a linked guest record with:
+      //   1. A valid (non-placeholder) document number
+      //   2. A front-side identity image uploaded
+      if (!booking.guest) {
+        throw Object.assign(
+          new Error('A guest record must be linked before check-in. Register the guest and upload their ID.'),
+          { statusCode: 422 },
+        );
+      }
+
+      const docNum = booking.guest.documentNumber;
+      const isPlaceholder =
+        !docNum ||
+        docNum.startsWith('PENDING') ||
+        docNum.startsWith('UNKNOWN') ||
+        docNum.startsWith('TEMP') ||
+        docNum.trim() === '';
+      if (isPlaceholder) {
+        throw Object.assign(
+          new Error('A valid NIC or passport number is required before check-in. Update the guest record.'),
+          { statusCode: 422 },
+        );
+      }
+
+      const hasFrontDoc = booking.guest.documents.some((d: { side: string }) => d.side === 'front');
+      if (!hasFrontDoc) {
+        throw Object.assign(
+          new Error('A front-side identity document image must be uploaded before check-in.'),
+          { statusCode: 422 },
+        );
+      }
+
+      if (!booking.guestMobile) {
+        throw Object.assign(new Error('Guest mobile number required before check-in'), { statusCode: 422 });
       }
 
       // Room availability
@@ -689,6 +734,237 @@ bookingsRouter.post('/:id/charges', canWrite, async (req, res, next) => {
     });
 
     res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Extend Stay ─────────────────────────────────────────────────────────────
+
+bookingsRouter.post('/:id/extend', canExtendStay, async (req, res, next) => {
+  try {
+    const { newCheckOutDate: newCheckOutStr, reason } = z
+      .object({
+        newCheckOutDate: z.string().min(1),
+        reason: z.string().optional(),
+      })
+      .parse(req.body);
+
+    const newCheckOut = new Date(newCheckOutStr);
+    if (isNaN(newCheckOut.getTime())) {
+      res.status(400).json({ error: 'Invalid checkout date' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: req.params.id },
+        include: { room: true, building: true },
+      });
+
+      if (!booking) throw Object.assign(new Error('Booking not found'), { statusCode: 404 });
+      if (!['Reserved', 'Confirmed', 'CheckedIn'].includes(booking.status)) {
+        throw Object.assign(new Error('Can only extend active bookings'), { statusCode: 422 });
+      }
+      if (newCheckOut <= booking.checkOutDate) {
+        throw Object.assign(new Error('New checkout must be later than current checkout'), { statusCode: 422 });
+      }
+
+      // Check for conflicts in the extended period
+      const conflict = await tx.booking.findFirst({
+        where: {
+          id: { not: booking.id },
+          roomId: booking.roomId,
+          status: { in: ['Reserved', 'Confirmed', 'CheckedIn'] },
+          checkInDate: { lt: newCheckOut },
+          checkOutDate: { gt: booking.checkOutDate },
+        },
+      });
+
+      if (conflict) {
+        throw Object.assign(
+          new Error(`Cannot extend: room is already booked from ${conflict.checkInDate.toISOString()} to ${conflict.checkOutDate.toISOString()}`),
+          { statusCode: 409 },
+        );
+      }
+
+      const newNights = differenceInCalendarDays(newCheckOut, booking.checkInDate);
+      const pricing = calculatePricing({
+        baseNightlyRate: toNumber(booking.baseNightlyRate),
+        acSurchargePerNight: toNumber(booking.acSurchargePerNight),
+        nights: newNights,
+        additionalCharges: toNumber(booking.additionalCharges),
+        serviceChargeType: booking.serviceChargeType as 'percentage' | 'fixed' | null | undefined,
+        serviceChargeValue: toNumber(booking.serviceChargeValue),
+        discountType: booking.discountType as 'percentage' | 'fixed' | null | undefined,
+        discountValue: toNumber(booking.discountValue),
+      });
+
+      const newOutstanding = Math.max(0, pricing.invoiceTotal - toNumber(booking.paidAmount));
+
+      return tx.booking.update({
+        where: { id: req.params.id },
+        data: {
+          checkOutDate: newCheckOut,
+          nights: newNights,
+          roomCharge: pricing.roomCharge,
+          serviceCharge: pricing.serviceCharge,
+          discount: pricing.discount,
+          invoiceTotal: pricing.invoiceTotal,
+          outstandingBalance: newOutstanding,
+          notes: reason
+            ? `${booking.notes || ''}\nStay extended to ${newCheckOut.toISOString().slice(0, 10)}: ${reason}`.trim()
+            : booking.notes,
+        },
+      });
+    });
+
+    await createAuditLog(req.user, req, {
+      buildingId: result.buildingId,
+      action: 'BOOKING_EXTENDED',
+      entityType: 'Booking',
+      entityId: result.id,
+      newValue: { newCheckOutDate: newCheckOut, newNights: result.nights, reason },
+    });
+
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Change Room ─────────────────────────────────────────────────────────────
+
+bookingsRouter.post('/:id/change-room', canChangeRoom, async (req, res, next) => {
+  try {
+    const { newRoomId, reason } = z
+      .object({
+        newRoomId: z.string().min(1),
+        reason: z.string().min(1, 'Reason required for room change'),
+      })
+      .parse(req.body);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({
+        where: { id: req.params.id },
+        include: { room: true, building: true },
+      });
+
+      if (!booking) throw Object.assign(new Error('Booking not found'), { statusCode: 404 });
+      if (!['Reserved', 'Confirmed', 'CheckedIn'].includes(booking.status)) {
+        throw Object.assign(new Error('Can only change room on active bookings'), { statusCode: 422 });
+      }
+
+      const newRoom = await tx.room.findUnique({ where: { id: newRoomId } });
+      if (!newRoom) throw Object.assign(new Error('Destination room not found'), { statusCode: 404 });
+      if (newRoom.buildingId !== booking.buildingId) {
+        throw Object.assign(new Error('Destination room must be in the same building'), { statusCode: 422 });
+      }
+      if (!newRoom.isActive) throw Object.assign(new Error('Destination room is not active'), { statusCode: 422 });
+      if (newRoom.status === 'Maintenance' || newRoom.status === 'Blocked' || newRoom.status === 'Cleaning') {
+        throw Object.assign(new Error(`Destination room is ${newRoom.status}`), { statusCode: 409 });
+      }
+      if (newRoom.id === booking.roomId) {
+        throw Object.assign(new Error('Guest is already in this room'), { statusCode: 422 });
+      }
+
+      // Capacity check for new room
+      if (booking.totalGuests > newRoom.capacity && !booking.capacityOverrideReason) {
+        throw Object.assign(
+          new Error(`Destination room capacity (${newRoom.capacity}) is less than guest count (${booking.totalGuests})`),
+          { statusCode: 422 },
+        );
+      }
+
+      // Availability check for new room
+      const conflict = await tx.booking.findFirst({
+        where: {
+          id: { not: booking.id },
+          roomId: newRoomId,
+          status: { in: ['Reserved', 'Confirmed', 'CheckedIn'] },
+          checkInDate: { lt: booking.checkOutDate },
+          checkOutDate: { gt: booking.checkInDate },
+        },
+      });
+      if (conflict) {
+        throw Object.assign(new Error('Destination room is not available for this booking period'), { statusCode: 409 });
+      }
+
+      // Recalculate pricing for new room rate
+      const newBaseRate = toNumber(newRoom.nonAcRate);
+      const newAcSurcharge = booking.isAc ? toNumber(newRoom.acSurcharge) : 0;
+      const pricing = calculatePricing({
+        baseNightlyRate: newBaseRate,
+        acSurchargePerNight: newAcSurcharge,
+        nights: booking.nights,
+        additionalCharges: toNumber(booking.additionalCharges),
+        serviceChargeType: booking.serviceChargeType as 'percentage' | 'fixed' | null | undefined,
+        serviceChargeValue: toNumber(booking.serviceChargeValue),
+        discountType: booking.discountType as 'percentage' | 'fixed' | null | undefined,
+        discountValue: toNumber(booking.discountValue),
+      });
+
+      const newOutstanding = Math.max(0, pricing.invoiceTotal - toNumber(booking.paidAmount));
+
+      // Update old room status if checked in
+      if (booking.status === 'CheckedIn') {
+        await tx.room.update({ where: { id: booking.roomId }, data: { status: 'Cleaning' } });
+        await tx.roomStatusHistory.create({
+          data: {
+            buildingId: booking.buildingId,
+            roomId: booking.roomId,
+            fromStatus: 'Occupied',
+            toStatus: 'Cleaning',
+            reason: `Guest moved to room ${newRoom.number}: ${reason}`,
+            changedById: req.user!.id,
+          },
+        });
+
+        await tx.room.update({ where: { id: newRoomId }, data: { status: 'Occupied' } });
+        await tx.roomStatusHistory.create({
+          data: {
+            buildingId: booking.buildingId,
+            roomId: newRoomId,
+            fromStatus: newRoom.status,
+            toStatus: 'Occupied',
+            reason: `Guest moved from room ${booking.room.number}: ${reason}`,
+            changedById: req.user!.id,
+          },
+        });
+      }
+
+      const updatedBooking = await tx.booking.update({
+        where: { id: req.params.id },
+        data: {
+          roomId: newRoomId,
+          baseNightlyRate: newBaseRate,
+          acSurchargePerNight: newAcSurcharge,
+          roomCharge: pricing.roomCharge,
+          serviceCharge: pricing.serviceCharge,
+          discount: pricing.discount,
+          invoiceTotal: pricing.invoiceTotal,
+          outstandingBalance: newOutstanding,
+          notes: `${booking.notes || ''}\nRoom changed from ${booking.room.number} to ${newRoom.number}: ${reason}`.trim(),
+        },
+      });
+
+      return {
+        booking: updatedBooking,
+        oldRoomNumber: booking.room.number,
+        newRoomNumber: newRoom.number,
+      };
+    });
+
+    await createAuditLog(req.user, req, {
+      buildingId: result.booking.buildingId,
+      action: 'BOOKING_ROOM_CHANGED',
+      entityType: 'Booking',
+      entityId: result.booking.id,
+      previousValue: { roomNumber: result.oldRoomNumber },
+      newValue: { roomNumber: result.newRoomNumber, reason },
+    });
+
+    res.json(result.booking);
   } catch (err) {
     next(err);
   }
