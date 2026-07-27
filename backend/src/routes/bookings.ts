@@ -71,7 +71,7 @@ bookingsRouter.get('/', async (req, res, next) => {
 bookingsRouter.get('/:id', async (req, res, next) => {
   try {
     const booking = await prisma.booking.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         room: true,
         guest: { include: { documents: true } },
@@ -336,7 +336,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
 
     const result = await prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         include: {
           guest: { include: { documents: true } },
           room: true,
@@ -398,7 +398,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
       }
 
       const updatedBooking = await tx.booking.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: {
           status: 'CheckedIn',
           actualCheckIn: new Date(),
@@ -454,7 +454,7 @@ bookingsRouter.post('/:id/checkout', canWrite, async (req, res, next) => {
 
     const result = await prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         include: {
           room: true,
           building: true,
@@ -525,7 +525,7 @@ bookingsRouter.post('/:id/checkout', canWrite, async (req, res, next) => {
       });
 
       const updatedBooking = await tx.booking.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: {
           status: 'CheckedOut',
           actualCheckOut: checkoutTime,
@@ -578,7 +578,7 @@ bookingsRouter.post('/:id/cancel', canManage, async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
 
-    const booking = await prisma.booking.findUnique({ where: { id: req.params.id } });
+    const booking = await prisma.booking.findUnique({ where: { id: String(req.params.id) } });
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
     if (booking.status === 'CheckedIn' || booking.status === 'CheckedOut') {
       res.status(422).json({ error: 'Cannot cancel a checked-in or checked-out booking' });
@@ -586,7 +586,7 @@ bookingsRouter.post('/:id/cancel', canManage, async (req, res, next) => {
     }
 
     const updated = await prisma.booking.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: { status: 'Cancelled', cancellationReason: reason },
     });
 
@@ -609,7 +609,7 @@ bookingsRouter.post('/:id/no-show', canManage, async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
 
-    const booking = await prisma.booking.findUnique({ where: { id: req.params.id } });
+    const booking = await prisma.booking.findUnique({ where: { id: String(req.params.id) } });
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
     if (booking.status !== 'Reserved' && booking.status !== 'Confirmed') {
       res.status(422).json({ error: 'Can only mark Reserved/Confirmed bookings as No Show' });
@@ -617,7 +617,7 @@ bookingsRouter.post('/:id/no-show', canManage, async (req, res, next) => {
     }
 
     const updated = await prisma.booking.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: { status: 'NoShow', cancellationReason: reason },
     });
 
@@ -673,7 +673,7 @@ function buildInvoiceItems(booking: any) {
 // ─── Additional charges (extra guest, food, damage, etc.) ───────────────────
 
 const addChargeSchema = z.object({
-  chargeType: z.enum(['ExtraGuest', 'Food', 'RoomService', 'Laundry', 'Damage', 'LateCheckout', 'Other']),
+  chargeType: z.enum(['Food', 'RoomService', 'Laundry', 'Damage', 'LateCheckout', 'Other']),
   description: z.string().optional(),
   amount: z.number().positive('Amount must be greater than zero'),
 });
@@ -758,7 +758,7 @@ bookingsRouter.post('/:id/extend', canExtendStay, async (req, res, next) => {
 
     const result = await prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         include: { room: true, building: true },
       });
 
@@ -803,7 +803,7 @@ bookingsRouter.post('/:id/extend', canExtendStay, async (req, res, next) => {
       const newOutstanding = Math.max(0, pricing.invoiceTotal - toNumber(booking.paidAmount));
 
       return tx.booking.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: {
           checkOutDate: newCheckOut,
           nights: newNights,
@@ -846,7 +846,7 @@ bookingsRouter.post('/:id/change-room', canChangeRoom, async (req, res, next) =>
 
     const result = await prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         include: { room: true, building: true },
       });
 
@@ -934,7 +934,7 @@ bookingsRouter.post('/:id/change-room', canChangeRoom, async (req, res, next) =>
       }
 
       const updatedBooking = await tx.booking.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: {
           roomId: newRoomId,
           baseNightlyRate: newBaseRate,
