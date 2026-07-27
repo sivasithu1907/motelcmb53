@@ -178,6 +178,11 @@ export default function NewBooking() {
   };
 
   const handleConfirm = () => {
+    // Walk-in requires at least one ID photo before submitting
+    if (checkInNow && nicFiles.filter(Boolean).length === 0) {
+      setErrors({ submit: 'An ID document photo is required for walk-in check-in. Please go back to the Guest step and attach the NIC or passport copy.' });
+      return;
+    }
     createMutation.mutate({
       buildingId: currentBuildingId,
       roomId: selectedRoomId,
@@ -506,6 +511,13 @@ export default function NewBooking() {
                 <input type="checkbox" checked={checkInNow} onChange={e => setCheckInNow(e.target.checked)} className="w-4 h-4 rounded text-indigo-600" />
                 <span className="text-sm font-medium text-slate-700">Check in guest immediately (walk-in)</span>
               </label>
+
+              {checkInNow && nicFiles.filter(Boolean).length === 0 && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>An ID document photo is required for walk-in check-in. Go back to the <strong>Guest</strong> step and attach the NIC or passport copy.</span>
+                </div>
+              )}
 
               {errors.submit && (
                 <div className="bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
