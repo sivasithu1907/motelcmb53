@@ -63,7 +63,7 @@ guestsRouter.get('/:id', async (req, res, next) => {
     const orgId = getOrgId(req);
 
     const guest = await prisma.guest.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         bookings: {
           orderBy: { createdAt: 'desc' },
@@ -142,9 +142,9 @@ guestsRouter.post('/', canManageGuests, async (req, res, next) => {
       data: {
         organizationId: orgId,
         ...data,
-        documentNumberMasked: maskDocumentNumber(data.documentNumber),
+        documentNumberMasked: maskDocumentNumber(data.documentNumber!),
         createdById: req.user!.id,
-      },
+      } as any,
     });
 
     // Return masked document number, never raw
@@ -159,7 +159,7 @@ guestsRouter.patch('/:id', canManageGuests, async (req, res, next) => {
   try {
     const orgId = getOrgId(req);
 
-    const existing = await prisma.guest.findUnique({ where: { id: req.params.id } });
+    const existing = await prisma.guest.findUnique({ where: { id: String(req.params.id) } });
     if (!existing) { res.status(404).json({ error: 'Guest not found' }); return; }
     if (existing.organizationId !== orgId && req.user!.role !== 'SuperAdmin') {
       res.status(403).json({ error: 'Access denied' });
@@ -173,7 +173,7 @@ guestsRouter.patch('/:id', canManageGuests, async (req, res, next) => {
     }
 
     const guest = await prisma.guest.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: updateData,
     });
 
