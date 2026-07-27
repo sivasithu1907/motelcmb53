@@ -1,9 +1,12 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { differenceInCalendarDays, format, addDays } from 'date-fns';
-import { ChevronRight, ChevronLeft, Wind, Users, CheckCircle, AlertCircle } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import {
+  ChevronRight, ChevronLeft, Wind, Users, CheckCircle, AlertCircle,
+  UserCheck, CalendarDays, X,
+} from 'lucide-react';
+import { Card, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
@@ -30,46 +33,152 @@ interface GuestSuggestion {
   mobile: string;
 }
 
+/** Returns the current time as HH:mm in the Asia/Colombo timezone. */
+function colomboNow(): { date: string; time: string } {
+  const now = new Date();
+  const local = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Colombo' }));
+  return {
+    date: format(local, 'yyyy-MM-dd'),
+    time: format(local, 'HH:mm'),
+  };
+}
+
+// ─── Booking Type Selection ───────────────────────────────────────────────────
+
+function BookingTypeSelection({ roomId }: { roomId: string | null }) {
+  const navigate = useNavigate();
+
+  const go = (mode: string) => {
+    const params = new URLSearchParams();
+    if (roomId) params.set('room', roomId);
+    params.set('mode', mode);
+    navigate(`/book?${params.toString()}`);
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">New Booking</h2>
+        <p className="text-sm text-slate-500 mt-1">How is this guest booking?</p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Walk-In */}
+        <button
+          onClick={() => go('walk-in')}
+          className="group text-left p-6 bg-white border-2 border-slate-200 rounded-2xl hover:border-indigo-500 hover:shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center mb-4 group-hover:bg-indigo-200 transition-colors">
+            <UserCheck className="w-6 h-6 text-indigo-600" />
+          </div>
+          <h3 className="text-lg font-semibold text-slate-900 mb-1">Walk-In Check-In</h3>
+          <p className="text-sm text-slate-500">
+            The guest is currently at the reception and will check in immediately.
+          </p>
+          <div className="mt-4 inline-flex items-center gap-1 text-indigo-600 text-sm font-medium group-hover:gap-2 transition-all">
+            Select <ChevronRight className="w-4 h-4" />
+          </div>
+        </button>
+
+        {/* Reservation */}
+        <button
+          onClick={() => go('reservation')}
+          className="group text-left p-6 bg-white border-2 border-slate-200 rounded-2xl hover:border-emerald-500 hover:shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center mb-4 group-hover:bg-emerald-200 transition-colors">
+            <CalendarDays className="w-6 h-6 text-emerald-600" />
+          </div>
+          <h3 className="text-lg font-semibold text-slate-900 mb-1">Reservation</h3>
+          <p className="text-sm text-slate-500">
+            Create a booking for a guest who will arrive and check in later.
+          </p>
+          <div className="mt-4 inline-flex items-center gap-1 text-emerald-600 text-sm font-medium group-hover:gap-2 transition-all">
+            Select <ChevronRight className="w-4 h-4" />
+          </div>
+        </button>
+      </div>
+
+      <div className="flex justify-start">
+        <Button variant="ghost" onClick={() => navigate(-1)}>
+          <X className="w-4 h-4 mr-1" /> Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Booking Wizard ──────────────────────────────────────────────────────
+
 export default function NewBooking() {
   const { currentBuildingId } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const qc = useQueryClient();
 
+  const mode = searchParams.get('mode');         // 'walk-in' | 'reservation' | null
+  const isWalkIn = mode === 'walk-in';
+
+  // If no mode, show type selection first
+  if (!mode) {
+    return <BookingTypeSelection roomId={searchParams.get('room')} />;
+  }
+
+  return <BookingWizard
+    isWalkIn={isWalkIn}
+    preselectedRoom={searchParams.get('room') || ''}
+    buildingId={currentBuildingId}
+    navigate={navigate}
+    qc={qc}
+  />;
+}
+
+// Split into inner component so hooks are only called when mode is known
+function BookingWizard({
+  isWalkIn,
+  preselectedRoom,
+  buildingId,
+  navigate,
+  qc,
+}: {
+  isWalkIn: boolean;
+  preselectedRoom: string;
+  buildingId: string;
+  navigate: ReturnType<typeof useNavigate>;
+  qc: ReturnType<typeof useQueryClient>;
+}) {
+  const now = colomboNow();
+
   const [step, setStep] = useState<Step>('dates');
-  const [checkIn, setCheckIn] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [checkInTime, setCheckInTime] = useState('14:00');
+  const [checkIn, setCheckIn] = useState(now.date);
+  const [checkInTime, setCheckInTime] = useState(isWalkIn ? now.time : '14:00');
   const [checkOut, setCheckOut] = useState(format(addDays(new Date(), 1), 'yyyy-MM-dd'));
   const [checkOutTime, setCheckOutTime] = useState('12:00');
   const [adults, setAdults] = useState(1);
   const [children, setChildren] = useState(0);
-  const [selectedRoomId, setSelectedRoomId] = useState(searchParams.get('room') || '');
+  const [selectedRoomId, setSelectedRoomId] = useState(preselectedRoom);
   const [isAc, setIsAc] = useState(false);
   const [guestSearch, setGuestSearch] = useState('');
   const [selectedGuestId, setSelectedGuestId] = useState('');
   const [guestName, setGuestName] = useState('');
   const [guestMobile, setGuestMobile] = useState('');
   const [guestNic, setGuestNic] = useState('');
-  const [nicFiles, setNicFiles] = useState<(File | null)[]>([]);
-  const [customRate, setCustomRate] = useState<number | null>(null); // null = use standard rate
+  const [primaryIdFile, setPrimaryIdFile] = useState<File | null>(null);
+  const [primaryIdPreview, setPrimaryIdPreview] = useState<string | null>(null);
+  const [customRate, setCustomRate] = useState<number | null>(null);
   const [depositAmount, setDepositAmount] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [notes, setNotes] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [checkInNow, setCheckInNow] = useState(false);
-  // Ref so onSuccess always sees the current checkInNow value
-  const checkInNowRef = useRef(false);
-  checkInNowRef.current = checkInNow;
 
   const nights = Math.max(1, differenceInCalendarDays(new Date(checkOut), new Date(checkIn)));
   const totalGuests = adults + children;
 
   // Fetch available rooms
   const { data: availableRooms = [], isLoading: roomsLoading } = useQuery<AvailableRoom[]>({
-    queryKey: ['availability', currentBuildingId, checkIn, checkOut],
+    queryKey: ['availability', buildingId, checkIn, checkOut],
     queryFn: () => api.get('/rooms/availability', {
       params: {
-        buildingId: currentBuildingId,
+        buildingId,
         checkIn: `${checkIn}T${checkInTime}:00`,
         checkOut: `${checkOut}T${checkOutTime}:00`,
       }
@@ -77,13 +186,12 @@ export default function NewBooking() {
     enabled: !!checkIn && !!checkOut && checkOut > checkIn,
   });
 
-  // Pre-select room from URL param
+  // Pre-select room from URL param once rooms load
   useEffect(() => {
-    const roomParam = searchParams.get('room');
-    if (roomParam && availableRooms.length > 0) {
-      setSelectedRoomId(roomParam);
+    if (preselectedRoom && availableRooms.length > 0) {
+      setSelectedRoomId(preselectedRoom);
     }
-  }, [searchParams, availableRooms]);
+  }, [preselectedRoom, availableRooms]);
 
   // Guest search
   const { data: guestSuggestions = [] } = useQuery<GuestSuggestion[]>({
@@ -101,40 +209,55 @@ export default function NewBooking() {
   const invoiceTotal = roomCharge - discountAmount;
   const balance = invoiceTotal - depositAmount;
 
+  // Handle primary ID file selection + preview
+  const handlePrimaryIdChange = (file: File | null) => {
+    setPrimaryIdFile(file);
+    if (primaryIdPreview) URL.revokeObjectURL(primaryIdPreview);
+    setPrimaryIdPreview(file ? URL.createObjectURL(file) : null);
+  };
+
   const createMutation = useMutation({
     mutationFn: (data: any) => api.post('/bookings', data),
     onSuccess: async (res) => {
-      // Upload all attached ID copies against the booking's guest record
+      const bookingId = res.data?.id;
       const guestId = res.data?.guestId;
-      const files = nicFiles.filter((f): f is File => !!f);
-      if (files.length > 0 && guestId) {
-        let failed = 0;
-        for (const file of files) {
-          try {
-            const fd = new FormData();
-            fd.append('document', file);
-            fd.append('side', 'front');
-            await api.post(`/documents/guests/${guestId}`, fd, {
-              headers: { 'Content-Type': 'multipart/form-data' },
-            });
-          } catch { failed++; }
-        }
-        if (failed > 0) {
-          alert(`Booking created, but ${failed} ID cop${failed === 1 ? 'y' : 'ies'} failed to upload. You can attach them again at check-in.`);
+
+      // Upload primary guest ID
+      if (primaryIdFile && guestId) {
+        try {
+          const fd = new FormData();
+          fd.append('document', primaryIdFile);
+          fd.append('side', 'front');
+          await api.post(`/documents/guests/${guestId}`, fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+        } catch {
+          // Upload failed — proceed but note it
+          if (!isWalkIn) {
+            alert('Booking saved but ID upload failed. You can upload the document from the Check-In page.');
+          }
         }
       }
+
       qc.invalidateQueries({ queryKey: ['rooms'] });
       qc.invalidateQueries({ queryKey: ['bookings'] });
 
-      // Walk-in: attempt immediate check-in now that document is uploaded
-      const bookingId = res.data?.id;
-      if (checkInNowRef.current && bookingId) {
+      if (isWalkIn && bookingId) {
+        // Auto check-in: booking is already Confirmed + document uploaded
         try {
-          await api.post(`/bookings/${bookingId}/check-in`, {});
-          navigate('/bookings');
-        } catch {
-          // Check-in requires document — redirect to Check-In page to complete
-          navigate(`/check-in?bookingId=${bookingId}`);
+          await api.post(`/bookings/${bookingId}/check-in`, {
+            roomConditionNotes: notes || undefined,
+          });
+          qc.invalidateQueries({ queryKey: ['checkin-due'] });
+          qc.invalidateQueries({ queryKey: ['in-house'] });
+          navigate('/in-house');
+        } catch (err) {
+          // Booking created as Confirmed — check-in failed. Do NOT silently leave bad state.
+          // Show clear error; receptionist can retry from Check-In Queue.
+          setErrors({
+            submit: `Booking ${res.data?.reference} created successfully but check-in failed: ${apiError(err)}. Go to the Check-In Queue to complete check-in.`,
+          });
+          setStep('summary');
         }
       } else {
         navigate('/bookings');
@@ -159,6 +282,11 @@ export default function NewBooking() {
     if (s === 'guest') {
       if (!guestName.trim()) e.guestName = 'Guest name required';
       if (!guestMobile.trim()) e.guestMobile = 'Mobile number required';
+      // Walk-in: NIC number and front ID photo are mandatory
+      if (isWalkIn) {
+        if (!guestNic.trim()) e.guestNic = 'NIC or passport number is required for walk-in check-in';
+        if (!primaryIdFile) e.nicDoc = 'Front identity document image is required for walk-in check-in';
+      }
     }
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -178,13 +306,8 @@ export default function NewBooking() {
   };
 
   const handleConfirm = () => {
-    // Walk-in requires at least one ID photo before submitting
-    if (checkInNow && nicFiles.filter(Boolean).length === 0) {
-      setErrors({ submit: 'An ID document photo is required for walk-in check-in. Please go back to the Guest step and attach the NIC or passport copy.' });
-      return;
-    }
     createMutation.mutate({
-      buildingId: currentBuildingId,
+      buildingId,
       roomId: selectedRoomId,
       guestId: selectedGuestId || undefined,
       guestName,
@@ -202,7 +325,7 @@ export default function NewBooking() {
       depositAmount: depositAmount > 0 ? depositAmount : undefined,
       depositMethod: 'Cash',
       notes,
-      status: checkInNow ? 'Confirmed' : 'Reserved',  // CheckedIn handled via separate /check-in endpoint
+      status: 'Confirmed',   // Always Confirmed; walk-in then calls /check-in, reservation stays Confirmed
     });
   };
 
@@ -219,9 +342,17 @@ export default function NewBooking() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">New Booking</h2>
-        <p className="text-sm text-slate-500 mt-1">Complete all steps to confirm the reservation</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">New Booking</h2>
+          <p className="text-sm text-slate-500 mt-1">Complete all steps to confirm the {isWalkIn ? 'walk-in' : 'reservation'}</p>
+        </div>
+        {/* Mode badge */}
+        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
+          isWalkIn ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'
+        }`}>
+          {isWalkIn ? <><UserCheck className="w-3.5 h-3.5" /> Walk-In Check-In</> : <><CalendarDays className="w-3.5 h-3.5" /> Reservation</>}
+        </span>
       </div>
 
       {/* Step indicator */}
@@ -236,14 +367,22 @@ export default function NewBooking() {
 
       <Card>
         <CardContent className="p-6 space-y-5">
+
           {/* STEP: DATES */}
           {step === 'dates' && (
             <>
               <h3 className="text-lg font-semibold text-slate-900">Select Dates</h3>
+              {isWalkIn && (
+                <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-sm px-4 py-2.5 rounded-lg flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 shrink-0" />
+                  Check-in time defaults to now and can be adjusted if needed.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Check-In Date</label>
-                  <Input type="date" value={checkIn} min={format(new Date(), 'yyyy-MM-dd')}
+                  <Input type="date" value={checkIn}
+                    min={isWalkIn ? undefined : format(new Date(), 'yyyy-MM-dd')}
                     onChange={e => setCheckIn(e.target.value)} />
                   {errors.checkIn && <p className="text-xs text-rose-600 mt-1">{errors.checkIn}</p>}
                 </div>
@@ -311,9 +450,9 @@ export default function NewBooking() {
                     return (
                       <label key={room.id}
                         className={cn(
-                          "flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors",
+                          "flex items-center gap-3 p-3 border rounded-lg transition-colors",
+                          selectable ? "cursor-pointer" : "cursor-not-allowed opacity-50",
                           selectedRoomId === room.id ? "border-indigo-500 bg-indigo-50" : "border-slate-200 hover:border-slate-300",
-                          !selectable ? "opacity-50 cursor-not-allowed" : ""
                         )}
                       >
                         <input type="radio" name="room" value={room.id}
@@ -341,7 +480,6 @@ export default function NewBooking() {
                 </div>
               )}
 
-              {/* Adjustable room charge — standard rate prefilled, editable per booking */}
               {selectedRoom && (
                 <div className="border-t border-slate-100 pt-4 mt-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -366,7 +504,7 @@ export default function NewBooking() {
                   </div>
                   {customRate !== null && customRate !== standardRate && (
                     <p className="text-xs text-amber-600 mt-1.5">
-                      Custom rate for this booking: {formatCurrency(customRate)}/night
+                      Custom rate: {formatCurrency(customRate)}/night
                       {isAc && ` + ${formatCurrency(acSurcharge)} A/C`} = {formatCurrency(customRate + acSurchargePerNight)}/night
                     </p>
                   )}
@@ -379,6 +517,22 @@ export default function NewBooking() {
           {step === 'guest' && (
             <>
               <h3 className="text-lg font-semibold text-slate-900">Guest Details</h3>
+
+              {/* Walk-In requirement banner */}
+              {isWalkIn && (
+                <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-sm px-4 py-3 rounded-lg">
+                  <p className="font-medium flex items-center gap-2 mb-1">
+                    <UserCheck className="w-4 h-4" /> Walk-In Check-In Requirements
+                  </p>
+                  <ul className="list-disc list-inside text-xs space-y-0.5 text-indigo-700">
+                    <li>Full name, mobile number</li>
+                    <li>NIC or passport number</li>
+                    <li>Front identity document photo <span className="font-semibold">(required)</span></li>
+                  </ul>
+                </div>
+              )}
+
+              {/* Existing guest search */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Search Existing Guest</label>
                 <Input
@@ -404,8 +558,8 @@ export default function NewBooking() {
                   </div>
                 )}
               </div>
+
               <div className="border-t border-slate-100 pt-4">
-                <p className="text-xs text-slate-500 mb-3">Or enter guest details manually:</p>
                 <div className="space-y-3">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
@@ -418,42 +572,82 @@ export default function NewBooking() {
                     {errors.guestMobile && <p className="text-xs text-rose-600 mt-1">{errors.guestMobile}</p>}
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">NIC / Passport Number</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      NIC / Passport Number {isWalkIn && <span className="text-rose-500">*</span>}
+                    </label>
                     <Input value={guestNic} onChange={e => setGuestNic(e.target.value)} placeholder="NIC or passport number" />
+                    {errors.guestNic && <p className="text-xs text-rose-600 mt-1">{errors.guestNic}</p>}
                   </div>
+
+                  {/* Primary guest ID document */}
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Attach ID Copies <span className="text-slate-400 font-normal">({totalGuests} guest{totalGuests !== 1 ? 's' : ''})</span>
+                      Front Identity Document {isWalkIn ? <span className="text-rose-500">*</span> : <span className="text-slate-400 font-normal">(optional)</span>}
                     </label>
-                    <div className="space-y-2">
-                      {Array.from({ length: Math.min(totalGuests, 8) }).map((_, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className="text-xs text-slate-500 w-16 shrink-0">Guest {i + 1}{i === 0 ? ' *' : ''}</span>
+
+                    {primaryIdPreview ? (
+                      <div className="space-y-2">
+                        <div className="relative inline-block">
+                          <img
+                            src={primaryIdPreview}
+                            alt="ID document preview"
+                            className="h-36 w-auto max-w-full object-contain rounded-lg border border-slate-200 bg-slate-50"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <label className="cursor-pointer">
+                            <span className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700">
+                              Replace
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              className="sr-only"
+                              onChange={e => handlePrimaryIdChange(e.target.files?.[0] || null)}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handlePrimaryIdChange(null)}
+                            className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50"
+                          >
+                            Remove
+                          </button>
+                          <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                            <CheckCircle className="w-3.5 h-3.5" /> {primaryIdFile?.name}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className={cn(
+                          "flex flex-col items-center justify-center w-full h-28 border-2 border-dashed rounded-xl cursor-pointer transition-colors",
+                          errors.nicDoc ? "border-rose-300 bg-rose-50" : "border-slate-200 hover:border-indigo-300 hover:bg-indigo-50"
+                        )}>
+                          <div className="text-center">
+                            <div className="text-2xl mb-1">📷</div>
+                            <p className="text-xs text-slate-500">Click to upload JPEG, PNG or WebP</p>
+                            {isWalkIn && <p className="text-xs text-rose-500 mt-1">Required for walk-in check-in</p>}
+                          </div>
                           <input
                             type="file"
-                            accept="image/jpeg,image/png,image/webp,application/pdf"
-                            onChange={e => {
-                              const f = e.target.files?.[0] || null;
-                              setNicFiles(prev => {
-                                const next = [...prev];
-                                next[i] = f;
-                                return next;
-                              });
-                            }}
-                            className="block w-full text-sm text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                            accept="image/jpeg,image/png,image/webp"
+                            className="sr-only"
+                            onChange={e => handlePrimaryIdChange(e.target.files?.[0] || null)}
                           />
-                          {nicFiles[i] && <span className="text-emerald-600 text-xs shrink-0">✓</span>}
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs text-slate-500 mt-1.5">
-                      {nicFiles.filter(Boolean).length > 0
-                        ? `${nicFiles.filter(Boolean).length} of ${totalGuests} attached — saved with the booking`
-                        : 'Optional now — main guest ID required before check-in'}
-                    </p>
+                        </label>
+                        {errors.nicDoc && <p className="text-xs text-rose-600 mt-1">{errors.nicDoc}</p>}
+                        {!isWalkIn && (
+                          <p className="text-xs text-slate-500 mt-1.5">
+                            Optional for reservations — required before check-in.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
+
               <div className="border-t border-slate-100 pt-4 space-y-3">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Deposit (LKR)</label>
@@ -479,10 +673,33 @@ export default function NewBooking() {
           {step === 'summary' && selectedRoom && (
             <>
               <h3 className="text-lg font-semibold text-slate-900">Booking Summary</h3>
+
+              {/* Mode summary banner */}
+              {isWalkIn ? (
+                <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-sm px-4 py-2.5 rounded-lg flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 shrink-0" />
+                  <span>Walk-In Check-In — guest will be checked in immediately on confirmation.</span>
+                </div>
+              ) : (
+                <div className="bg-slate-50 border border-slate-200 text-slate-600 text-sm px-4 py-2.5 rounded-lg flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4 shrink-0" />
+                  <span>Reservation — identity document must be uploaded before check-in.</span>
+                </div>
+              )}
+
               <div className="bg-slate-50 rounded-xl p-5 space-y-3 text-sm">
                 <div className="flex justify-between"><span className="text-slate-600">Room</span><span className="font-semibold">Room {selectedRoom.number}</span></div>
                 <div className="flex justify-between"><span className="text-slate-600">Guest</span><span className="font-semibold">{guestName}</span></div>
                 <div className="flex justify-between"><span className="text-slate-600">Mobile</span><span>{guestMobile}</span></div>
+                {guestNic && <div className="flex justify-between"><span className="text-slate-600">NIC / Passport</span><span>{guestNic}</span></div>}
+                {primaryIdFile && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-600">ID Document</span>
+                    <span className="inline-flex items-center gap-1 text-emerald-600">
+                      <CheckCircle className="w-3.5 h-3.5" /> Attached
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between"><span className="text-slate-600">Check-In</span><span>{checkIn} {checkInTime}</span></div>
                 <div className="flex justify-between"><span className="text-slate-600">Check-Out</span><span>{checkOut} {checkOutTime}</span></div>
                 <div className="flex justify-between"><span className="text-slate-600">Nights</span><span>{nights}</span></div>
@@ -507,22 +724,10 @@ export default function NewBooking() {
                 </div>
               </div>
 
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" checked={checkInNow} onChange={e => setCheckInNow(e.target.checked)} className="w-4 h-4 rounded text-indigo-600" />
-                <span className="text-sm font-medium text-slate-700">Check in guest immediately (walk-in)</span>
-              </label>
-
-              {checkInNow && nicFiles.filter(Boolean).length === 0 && (
-                <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>An ID document photo is required for walk-in check-in. Go back to the <strong>Guest</strong> step and attach the NIC or passport copy.</span>
-                </div>
-              )}
-
               {errors.submit && (
                 <div className="bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  {errors.submit}
+                  <span>{errors.submit}</span>
                 </div>
               )}
             </>
@@ -531,9 +736,9 @@ export default function NewBooking() {
       </Card>
 
       <div className="flex justify-between">
-        <Button variant="outline" onClick={step === 'dates' ? () => navigate('/rooms') : back}>
+        <Button variant="outline" onClick={step === 'dates' ? () => navigate(-1) : back}>
           <ChevronLeft className="w-4 h-4 mr-1" />
-          {step === 'dates' ? 'Cancel' : 'Back'}
+          {step === 'dates' ? 'Change Type' : 'Back'}
         </Button>
 
         {step !== 'summary' ? (
@@ -542,7 +747,9 @@ export default function NewBooking() {
           </Button>
         ) : (
           <Button onClick={handleConfirm} disabled={createMutation.isPending}>
-            {createMutation.isPending ? 'Creating…' : checkInNow ? 'Confirm & Check In' : 'Confirm Reservation'}
+            {createMutation.isPending
+              ? (isWalkIn ? 'Checking In…' : 'Saving…')
+              : (isWalkIn ? 'Confirm & Check In' : 'Confirm Reservation')}
           </Button>
         )}
       </div>
