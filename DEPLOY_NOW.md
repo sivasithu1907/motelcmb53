@@ -228,3 +228,4 @@ If you changed the database schema:
 → docker compose up -d --build
 → docker compose exec backend npx prisma migrate deploy
 → re-run seed
+
