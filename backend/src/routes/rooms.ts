@@ -1,9 +1,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, canManage, canWrite } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
+import { canManageRooms, canUpdateRoomStatus } from '../middleware/permissions.js';
 import { createAuditLog } from '../services/audit.js';
 import { RoomStatus } from '../types.js';
+
+// Legacy aliases for existing route uses
+const canManage = canManageRooms;
+const canWrite = canUpdateRoomStatus;
 
 export const roomsRouter = Router();
 roomsRouter.use(requireAuth);
@@ -187,6 +192,25 @@ const statusChangeSchema = z.object({
   endDate: z.string().optional(),
 });
 
+/**
+ * Controlled room status transition table.
+ * Occupied and Cleaning statuses are set ONLY by booking workflows (check-in / checkout).
+ * This endpoint handles operator-initiated transitions: maintenance, blocking, cleaning completion.
+ *
+ * Allowed via this endpoint:
+ *   Vacant    → Maintenance | Blocked
+ *   Cleaning  → Vacant (cleaning complete)
+ *   Maintenance → Cleaning | Vacant
+ *   Blocked   → Vacant
+ *   Occupied  → (NONE — must go through checkout)
+ */
+const ALLOWED_MANUAL_TRANSITIONS: Partial<Record<RoomStatus, RoomStatus[]>> = {
+  Vacant: ['Maintenance', 'Blocked'],
+  Cleaning: ['Vacant'],
+  Maintenance: ['Cleaning', 'Vacant'],
+  Blocked: ['Vacant'],
+};
+
 roomsRouter.patch('/:id/status', canWrite, async (req, res, next) => {
   try {
     const { status, reason, notes, startDate, endDate } = statusChangeSchema.parse(req.body);
@@ -194,18 +218,34 @@ roomsRouter.patch('/:id/status', canWrite, async (req, res, next) => {
     const current = await prisma.room.findUnique({ where: { id: req.params.id } });
     if (!current) { res.status(404).json({ error: 'Room not found' }); return; }
 
-    // Guards: cannot manually mark Occupied or Cleaning via this endpoint
-    // Those are set by check-in/checkout workflows
-    const directlySettable: RoomStatus[] = ['Vacant', 'Maintenance', 'Blocked'];
-    if (!directlySettable.includes(status) && req.user!.role !== 'SuperAdmin' && req.user!.role !== 'OwnerAdmin') {
-      res.status(403).json({ error: `Status '${status}' must be set through the booking workflow` });
+    // Occupied rooms can never be manually changed — they must go through checkout
+    if (current.status === 'Occupied') {
+      res.status(422).json({
+        error: 'Occupied rooms cannot have their status changed manually. Process a checkout first.',
+      });
+      return;
+    }
+
+    // Validate transition (SuperAdmin may override for emergency corrections)
+    const allowed = ALLOWED_MANUAL_TRANSITIONS[current.status] ?? [];
+    const isSuperAdmin = req.user!.role === 'SuperAdmin';
+    if (!allowed.includes(status) && !isSuperAdmin) {
+      res.status(422).json({
+        error: `Cannot manually change status from '${current.status}' to '${status}'. Allowed: ${allowed.join(', ') || 'none (use booking workflow)'}`,
+      });
+      return;
+    }
+
+    // Maintenance or Blocked requires a reason
+    if ((status === 'Maintenance' || status === 'Blocked') && !reason) {
+      res.status(400).json({ error: `A reason is required when setting status to ${status}` });
       return;
     }
 
     const [room] = await prisma.$transaction([
       prisma.room.update({
         where: { id: req.params.id },
-        data: { status, maintenanceNote: notes },
+        data: { status, maintenanceNote: status === 'Maintenance' ? (notes || reason) : null },
       }),
       prisma.roomStatusHistory.create({
         data: {
