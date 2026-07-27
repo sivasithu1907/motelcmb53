@@ -99,18 +99,30 @@ export default function InHouseGuests() {
                     <div>Out: {formatDate(b.checkOutDate)}</div>
                   </div>
 
-                  <div className="border-t border-slate-100 pt-3 flex justify-between items-center">
-                    <div>
-                      <p className="text-xs text-slate-500">Outstanding</p>
-                      <p className={`text-sm font-bold ${Number(b.outstandingBalance) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                        {Number(b.outstandingBalance) > 0 ? formatCurrency(Number(b.outstandingBalance)) : 'Settled'}
-                      </p>
+                  <div className="border-t border-slate-100 pt-3 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <p className="text-xs text-slate-500">Outstanding</p>
+                        <p className={`text-sm font-bold ${Number(b.outstandingBalance) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                          {Number(b.outstandingBalance) > 0 ? formatCurrency(Number(b.outstandingBalance)) : 'Settled'}
+                        </p>
+                      </div>
+                      {can('checkout') && (checkoutToday || overdue) && (
+                        <Button size="sm" variant="danger" onClick={() => navigate(`/checkout?booking=${b.id}`)}>
+                          Checkout
+                        </Button>
+                      )}
                     </div>
-                    {can('checkout') && (checkoutToday || overdue) && (
-                      <Button size="sm" variant="danger" onClick={() => navigate(`/checkout?booking=${b.id}`)}>
-                        Checkout
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1 text-xs"
+                        onClick={() => navigate(`/check-in-payment?bookingId=${b.id}`)}
+                      >
+                        Invoice / Payment
                       </Button>
-                    )}
+                    </div>
                   </div>
                 </CardContent>
               </Card>
