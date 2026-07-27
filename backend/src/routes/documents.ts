@@ -165,7 +165,7 @@ documentsRouter.post('/guests/:guestId', canUploadDocuments, upload.single('docu
 documentsRouter.get('/:id', canViewDocuments, async (req, res, next) => {
   try {
     const doc = await prisma.guestDocument.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: { guest: { select: { organizationId: true } } },
     });
 
