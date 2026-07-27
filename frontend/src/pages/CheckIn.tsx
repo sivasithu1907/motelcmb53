@@ -49,10 +49,10 @@ export default function CheckIn() {
 
   const { data: dueList = [] } = useQuery<Booking[]>({
     queryKey: ['checkin-due'],
-    queryFn: () => api.get('/bookings', { params: { status: 'Reserved', limit: 50 } })
+    queryFn: () => api.get('/bookings', { params: { limit: 100 } })
       .then(r => r.data.data.filter((b: Booking) => {
         const d = parseISO(b.checkInDate);
-        return isToday(d) || isPast(d);
+        return (isToday(d) || isPast(d)) && ['Reserved', 'Confirmed'].includes(b.status);
       })),
     refetchInterval: 30000,
   });
@@ -179,7 +179,7 @@ export default function CheckIn() {
                     <div className="mt-3 space-y-2">
                       <input
                         type="file"
-                        accept="image/jpeg,image/png,image/webp,application/pdf"
+                        accept="image/jpeg,image/png,image/webp"
                         onChange={e => setUploadFile(e.target.files?.[0] || null)}
                         className="text-sm text-slate-600"
                       />
@@ -256,8 +256,9 @@ export default function CheckIn() {
                 )}
 
                 {error && (
-                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3 rounded-lg">
-                    {error}
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{error}</span>
                   </div>
                 )}
 
