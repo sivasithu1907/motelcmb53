@@ -36,7 +36,7 @@ buildingsRouter.get('/', async (req, res, next) => {
 buildingsRouter.get('/:id', async (req, res, next) => {
   try {
     const building = await prisma.building.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: { rooms: { orderBy: { number: 'asc' } } },
     });
     if (!building) { res.status(404).json({ error: 'Building not found' }); return; }
@@ -64,7 +64,7 @@ buildingsRouter.post('/', isAdmin, async (req, res, next) => {
         ...data,
         organizationId: req.user!.organizationId,
         contactNumbers: data.contactNumbers || [],
-      },
+      } as any,
     });
     res.status(201).json(building);
   } catch (err) {
@@ -76,8 +76,8 @@ buildingsRouter.patch('/:id', canManage, async (req, res, next) => {
   try {
     const data = buildingSchema.partial().parse(req.body);
     const building = await prisma.building.update({
-      where: { id: req.params.id },
-      data,
+      where: { id: String(req.params.id) },
+      data: data as any,
     });
     res.json(building);
   } catch (err) {
