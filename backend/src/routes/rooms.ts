@@ -132,7 +132,7 @@ roomsRouter.get('/availability', async (req, res, next) => {
 roomsRouter.get('/:id', async (req, res, next) => {
   try {
     const room = await prisma.room.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         bookings: {
           where: { status: { in: ['CheckedIn', 'Reserved', 'Confirmed'] } },
@@ -164,7 +164,7 @@ const roomSchema = z.object({
 roomsRouter.post('/', canManage, async (req, res, next) => {
   try {
     const data = roomSchema.parse(req.body);
-    const room = await prisma.room.create({ data });
+    const room = await prisma.room.create({ data: data as any });
     res.status(201).json(room);
   } catch (err) {
     next(err);
@@ -175,7 +175,7 @@ roomsRouter.patch('/:id', canManage, async (req, res, next) => {
   try {
     const data = roomSchema.partial().omit({ buildingId: true }).parse(req.body);
     const room = await prisma.room.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data,
     });
     res.json(room);
@@ -215,7 +215,7 @@ roomsRouter.patch('/:id/status', canWrite, async (req, res, next) => {
   try {
     const { status, reason, notes, startDate, endDate } = statusChangeSchema.parse(req.body);
 
-    const current = await prisma.room.findUnique({ where: { id: req.params.id } });
+    const current = await prisma.room.findUnique({ where: { id: String(req.params.id) } });
     if (!current) { res.status(404).json({ error: 'Room not found' }); return; }
 
     // Occupied rooms can never be manually changed — they must go through checkout
@@ -244,7 +244,7 @@ roomsRouter.patch('/:id/status', canWrite, async (req, res, next) => {
 
     const [room] = await prisma.$transaction([
       prisma.room.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: { status, maintenanceNote: status === 'Maintenance' ? (notes || reason) : null },
       }),
       prisma.roomStatusHistory.create({
