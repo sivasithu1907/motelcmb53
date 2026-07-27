@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, canWrite, canManage } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
+import { canManageGuests } from '../middleware/permissions.js';
 
 export const guestsRouter = Router();
 guestsRouter.use(requireAuth);
@@ -11,11 +12,17 @@ function maskDocumentNumber(num: string): string {
   return '*'.repeat(num.length - 4) + num.slice(-4);
 }
 
+/** Derive the user's organizationId from auth context. */
+function getOrgId(req: any): string {
+  return req.user.organizationId;
+}
+
 guestsRouter.get('/', async (req, res, next) => {
   try {
     const { search, page = '1', limit = '50' } = req.query as Record<string, string>;
+    const orgId = getOrgId(req);
 
-    const where: any = {};
+    const where: any = { organizationId: orgId };
     if (search) {
       where.OR = [
         { fullName: { contains: search, mode: 'insensitive' } },
@@ -53,6 +60,8 @@ guestsRouter.get('/', async (req, res, next) => {
 
 guestsRouter.get('/:id', async (req, res, next) => {
   try {
+    const orgId = getOrgId(req);
+
     const guest = await prisma.guest.findUnique({
       where: { id: req.params.id },
       include: {
@@ -76,8 +85,14 @@ guestsRouter.get('/:id', async (req, res, next) => {
 
     if (!guest) { res.status(404).json({ error: 'Guest not found' }); return; }
 
-    // Mask document number in response
-    const { documentNumber: _, ...safeGuest } = guest as any;
+    // Organization gate: prevent cross-org data access
+    if (guest.organizationId !== orgId && req.user!.role !== 'SuperAdmin') {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // Never return the raw document number in list/detail views
+    const { documentNumber: _raw, ...safeGuest } = guest as any;
     res.json({ ...safeGuest, documentNumberMasked: guest.documentNumberMasked });
   } catch (err) {
     next(err);
@@ -87,7 +102,7 @@ guestsRouter.get('/:id', async (req, res, next) => {
 const guestSchema = z.object({
   fullName: z.string().min(1, 'Full name required'),
   documentType: z.enum(['NIC', 'Passport']).default('NIC'),
-  documentNumber: z.string().min(9, 'Valid document number required'),
+  documentNumber: z.string().min(9, 'Valid document number required (min 9 characters)'),
   mobile: z.string().min(9, 'Valid mobile number required'),
   whatsapp: z.string().optional(),
   address: z.string().optional(),
@@ -97,43 +112,60 @@ const guestSchema = z.object({
   internalNotes: z.string().optional(),
 });
 
-guestsRouter.post('/', canWrite, async (req, res, next) => {
+guestsRouter.post('/', canManageGuests, async (req, res, next) => {
   try {
     const data = guestSchema.parse(req.body);
+    const orgId = getOrgId(req);
 
-    // Duplicate check
+    // Org-scoped duplicate check — return only limited info to avoid leaking full records
     const existingByDoc = await prisma.guest.findFirst({
-      where: { documentNumber: data.documentNumber },
+      where: { organizationId: orgId, documentNumber: data.documentNumber },
+      select: { id: true, fullName: true, documentNumberMasked: true, mobile: true },
     });
 
     const existingByMobile = await prisma.guest.findFirst({
-      where: { mobile: data.mobile },
+      where: { organizationId: orgId, mobile: data.mobile },
+      select: { id: true, fullName: true, documentNumberMasked: true, mobile: true },
     });
 
     const duplicateWarning = existingByDoc || existingByMobile
       ? {
           duplicateFound: true,
-          existingGuest: existingByDoc || existingByMobile,
+          existingGuestId: (existingByDoc || existingByMobile)!.id,
+          maskedName: (existingByDoc || existingByMobile)!.fullName.replace(/(?<=.).(?=.*\s)/g, '*'),
+          maskedDocument: (existingByDoc || existingByMobile)!.documentNumberMasked,
           reason: existingByDoc ? 'document_number' : 'mobile',
         }
       : null;
 
     const guest = await prisma.guest.create({
       data: {
+        organizationId: orgId,
         ...data,
         documentNumberMasked: maskDocumentNumber(data.documentNumber),
         createdById: req.user!.id,
       },
     });
 
-    res.status(201).json({ guest, duplicateWarning });
+    // Return masked document number, never raw
+    const { documentNumber: _raw, ...safeGuest } = guest as any;
+    res.status(201).json({ guest: safeGuest, duplicateWarning });
   } catch (err) {
     next(err);
   }
 });
 
-guestsRouter.patch('/:id', canWrite, async (req, res, next) => {
+guestsRouter.patch('/:id', canManageGuests, async (req, res, next) => {
   try {
+    const orgId = getOrgId(req);
+
+    const existing = await prisma.guest.findUnique({ where: { id: req.params.id } });
+    if (!existing) { res.status(404).json({ error: 'Guest not found' }); return; }
+    if (existing.organizationId !== orgId && req.user!.role !== 'SuperAdmin') {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
     const data = guestSchema.partial().parse(req.body);
     const updateData: any = { ...data };
     if (data.documentNumber) {
@@ -145,7 +177,8 @@ guestsRouter.patch('/:id', canWrite, async (req, res, next) => {
       data: updateData,
     });
 
-    res.json(guest);
+    const { documentNumber: _raw, ...safeGuest } = guest as any;
+    res.json(safeGuest);
   } catch (err) {
     next(err);
   }
