@@ -21,6 +21,7 @@ import Reports from './pages/Reports';
 import Users from './pages/Users';
 import AuditLog from './pages/AuditLog';
 import SystemSettings from './pages/SystemSettings';
+import Buildings from './pages/Buildings';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,6 +78,7 @@ function AppRoutes() {
         <Route path="users" element={<Users />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="settings" element={<SystemSettings />} />
+        <Route path="buildings" element={<Buildings />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
