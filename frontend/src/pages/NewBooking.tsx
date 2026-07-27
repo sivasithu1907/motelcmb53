@@ -279,10 +279,12 @@ function BookingWizard({
 
       if (isWalkIn && bookingId) {
         try {
-          await api.post(`/bookings/${bookingId}/check-in`, { roomConditionNotes: notes || undefined });
+          const ciRes = await api.post(`/bookings/${bookingId}/check-in`, { roomConditionNotes: notes || undefined });
+          const newInvId = ciRes.data?.invoiceId;
           qc.invalidateQueries({ queryKey: ['checkin-due'] });
           qc.invalidateQueries({ queryKey: ['in-house'] });
-          navigate('/in-house');
+          qc.invalidateQueries({ queryKey: ['rooms'] });
+          navigate(newInvId ? `/check-in-payment/${newInvId}?from=checkin` : '/in-house');
         } catch (err) {
           setWalkInFailed('checkin');
           setWalkInFailedMsg(apiError(err));
