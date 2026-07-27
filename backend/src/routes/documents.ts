@@ -4,7 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import { createId } from '@paralleldrive/cuid2';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, canWrite } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
+import { canUploadDocuments, canViewDocuments } from '../middleware/permissions.js';
 import { createAuditLog } from '../services/audit.js';
 
 export const documentsRouter = Router();
@@ -12,7 +13,31 @@ documentsRouter.use(requireAuth);
 
 const UPLOAD_DIR = process.env.UPLOAD_DIRECTORY || './uploads/documents';
 const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB || '10') * 1024 * 1024;
-const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
+// Identity documents: JPEG, PNG and WebP only. PDF is not accepted.
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+// File signature (magic bytes) validation for identity document images.
+// This prevents accepting an executable file renamed as .jpg etc.
+const FILE_SIGNATURES: Record<string, number[][]> = {
+  'image/jpeg': [[0xFF, 0xD8, 0xFF]],
+  'image/png':  [[0x89, 0x50, 0x4E, 0x47]],
+  'image/webp': [[0x52, 0x49, 0x46, 0x46]], // RIFF header; WebP bytes at offset 8 also checked
+};
+
+function validateFileSignature(filePath: string, claimedMime: string): boolean {
+  try {
+    const sigs = FILE_SIGNATURES[claimedMime];
+    if (!sigs) return false;
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(12);
+    fs.readSync(fd, buf, 0, 12, 0);
+    fs.closeSync(fd);
+    return sigs.some((sig) => sig.every((byte, i) => buf[i] === byte));
+  } catch {
+    return false;
+  }
+}
 
 // Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -41,14 +66,25 @@ const upload = multer({
 });
 
 // Upload document
-documentsRouter.post('/guests/:guestId', canWrite, upload.single('document'), async (req, res, next) => {
+documentsRouter.post('/guests/:guestId', canUploadDocuments, upload.single('document'), async (req, res, next) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No file uploaded' });
       return;
     }
 
+    // Path traversal protection: stored filename is random (no user input)
+    // and upload dir is resolved to an absolute path at startup.
     const { guestId } = req.params;
+    const guestIdStr = Array.isArray(guestId) ? guestId[0] : guestId;
+
+    // Reject non-alphanumeric guestId to prevent path injection
+    if (!/^[a-z0-9_-]+$/i.test(guestIdStr)) {
+      if (req.file?.path) fs.unlinkSync(req.file.path);
+      res.status(400).json({ error: 'Invalid guest ID' });
+      return;
+    }
+
     const side = req.body.side as string;
 
     if (!['front', 'back'].includes(side)) {
@@ -57,16 +93,30 @@ documentsRouter.post('/guests/:guestId', canWrite, upload.single('document'), as
       return;
     }
 
-    const guest = await prisma.guest.findUnique({ where: { id: guestId } });
+    // Validate file signature (magic bytes) to prevent malicious files renamed as images
+    if (!validateFileSignature(req.file.path, req.file.mimetype)) {
+      fs.unlinkSync(req.file.path);
+      res.status(422).json({ error: 'File content does not match the declared image type. Only JPEG, PNG and WebP images are accepted.' });
+      return;
+    }
+
+    const guest = await prisma.guest.findUnique({ where: { id: guestIdStr } });
     if (!guest) {
       fs.unlinkSync(req.file.path);
       res.status(404).json({ error: 'Guest not found' });
       return;
     }
 
+    // Organization gate: document must belong to a guest in user's org
+    if (guest.organizationId !== req.user!.organizationId && req.user!.role !== 'SuperAdmin') {
+      fs.unlinkSync(req.file.path);
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
     // Remove existing document for this side
     const existing = await prisma.guestDocument.findFirst({
-      where: { guestId, side },
+      where: { guestId: guestIdStr, side },
     });
 
     if (existing) {
@@ -77,7 +127,7 @@ documentsRouter.post('/guests/:guestId', canWrite, upload.single('document'), as
 
     const doc = await prisma.guestDocument.create({
       data: {
-        guestId,
+        guestId: guestIdStr,
         side,
         originalFilename: req.file.originalname,
         storedFilename: path.basename(req.file.path),
@@ -92,7 +142,7 @@ documentsRouter.post('/guests/:guestId', canWrite, upload.single('document'), as
       action: 'DOCUMENT_UPLOADED',
       entityType: 'GuestDocument',
       entityId: doc.id,
-      newValue: { guestId, side, filename: req.file.originalname },
+      newValue: { guestId: guestIdStr, side, filename: req.file.originalname },
     });
 
     res.status(201).json({
@@ -112,12 +162,21 @@ documentsRouter.post('/guests/:guestId', canWrite, upload.single('document'), as
 });
 
 // View document (authenticated, with audit trail)
-documentsRouter.get('/:id', requireAuth, async (req, res, next) => {
+documentsRouter.get('/:id', canViewDocuments, async (req, res, next) => {
   try {
-    const doc = await prisma.guestDocument.findUnique({ where: { id: req.params.id } });
+    const doc = await prisma.guestDocument.findUnique({
+      where: { id: req.params.id },
+      include: { guest: { select: { organizationId: true } } },
+    });
 
     if (!doc) {
       res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+
+    // Organization gate
+    if (doc.guest.organizationId !== req.user!.organizationId && req.user!.role !== 'SuperAdmin') {
+      res.status(403).json({ error: 'Access denied' });
       return;
     }
 
