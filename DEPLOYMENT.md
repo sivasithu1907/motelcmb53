@@ -1,130 +1,161 @@
-# Deployment Guide — Motel CMB 53
+# Motel CMB 53 — Deployment Guide
 
 ## Prerequisites
 
-- Ubuntu 22.04 VPS with at least 2GB RAM
-- Domain name pointed to server IP (A record)
+- Ubuntu 22.04 LTS VPS (Hetzner or equivalent)
+- Docker + Docker Compose installed
+- DuckDNS domain configured to point at the server IP
 - Ports 80 and 443 open in firewall
 
-## 1. Server Setup
+---
 
-```bash
-# Update system
-apt update && apt upgrade -y
+## Environment Variables
 
-# Install Docker
-curl -fsSL https://get.docker.com | sh
-usermod -aG docker $USER
-newgrp docker
-
-# Clone or upload project
-git clone <your-repo> /opt/motelcmb53
-cd /opt/motelcmb53
-```
-
-## 2. Configure Environment
+Copy and fill in all values before first deploy:
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Fill in:
-```
-POSTGRES_PASSWORD=<strong-random-password>
-COOKIE_SECRET=<64-char-random-string>
+### Required variables
+
+```env
+# Domain
 APP_DOMAIN=motelcmb53.duckdns.org
+
+# Database
+POSTGRES_DB=motelcmb53
+POSTGRES_USER=motelcmb53
+POSTGRES_PASSWORD=<strong-random-password>
+DATABASE_URL=postgresql://motelcmb53:<password>@db:5432/motelcmb53
+
+# Security
+COOKIE_SECRET=<32-random-bytes-hex>
 ALLOWED_ORIGINS=https://motelcmb53.duckdns.org
+
+# File uploads
+UPLOAD_DIRECTORY=/app/uploads/documents
+MAX_FILE_SIZE_MB=10
+
+# Timezone
+TZ=Asia/Colombo
+NODE_ENV=production
 ```
 
-Generate secrets:
+Generate secure random values:
+
 ```bash
-openssl rand -hex 32   # for POSTGRES_PASSWORD
 openssl rand -hex 32   # for COOKIE_SECRET
+openssl rand -hex 16   # for POSTGRES_PASSWORD
 ```
 
-## 3. First Launch
+---
+
+## First-Time Deployment
 
 ```bash
-# Build and start all services
+# 1. Clone repository to server
+ssh root@<server-ip>
+git clone https://github.com/sivasithu1907/motelcmb53.git /opt/motelcmb53
+cd /opt/motelcmb53
+
+# 2. Configure environment
+cp .env.example .env
+nano .env   # fill in all required values
+
+# 3. Start services
 docker compose up -d --build
 
-# Wait for DB to be ready, then run migrations and seed
+# 4. Run migrations — REQUIRED, creates all tables
 docker compose exec backend npx prisma migrate deploy
-docker compose exec backend node dist/seed.js
-# OR (if ts-node available in container)
-docker compose exec backend npx ts-node prisma/seed.ts
+
+# 5a. Seed demo data (development only)
+docker compose exec backend npx tsx prisma/seed.ts
+
+# 5b. Production: run migrations only, then create admin via app
+#     (demo seed creates weak credentials — do not use on production)
+
+# 6. Verify
+curl https://motelcmb53.duckdns.org/api/health
 ```
 
-## 4. Verify
+---
+
+## Standard Deploy Workflow
 
 ```bash
-# Check all containers running
-docker compose ps
+# On laptop after edits — push to GitHub as usual
 
-# Check backend health
-curl http://localhost:3001/health
-
-# Check logs
-docker compose logs -f backend
-```
-
-Visit `https://motelcmb53.duckdns.org` — Caddy handles HTTPS automatically via Let's Encrypt.
-
-## 5. Ongoing Operations
-
-```bash
-# View logs
-docker compose logs -f
-
-# Restart a service
-docker compose restart backend
-
-# Update and redeploy
-git pull
+# On server:
+ssh root@<server-ip>
+cd /opt/motelcmb53
+git pull origin main
 docker compose up -d --build
 
-# Database console
-docker compose exec db psql -U motelcmb53 motelcmb53
+# Only if Prisma schema changed:
+docker compose exec backend npx prisma migrate deploy
 ```
 
-## File Uploads
+---
 
-Uploaded guest documents are stored in the Docker volume `motelcmb53_uploads`.
+## Database Migrations
+
+This project uses **Prisma Migrate** — not `prisma db push`.
+
+Migration files live in `backend/prisma/migrations/`. Always commit them.
+Never edit or delete existing migration files.
 
 ```bash
-# Back up uploads
-docker run --rm -v motelcmb53_uploads:/data -v $(pwd):/backup alpine \
-  tar czf /backup/uploads-$(date +%Y%m%d).tar.gz -C /data .
+# Deploy pending migrations
+docker compose exec backend npx prisma migrate deploy
+
+# Check status
+docker compose exec backend npx prisma migrate status
 ```
 
-## Security Hardening
+---
+
+## Backup
 
 ```bash
-# Firewall (UFW)
-ufw allow 22
-ufw allow 80
-ufw allow 443
-ufw enable
+# Manual backup
+docker compose exec db pg_dump -U motelcmb53 motelcmb53 \
+  | gzip > /opt/backups/$(date +%Y%m%d_%H%M%S).sql.gz
 
-# Fail2ban for SSH
-apt install fail2ban -y
+# Restore
+gunzip -c /opt/backups/20250127_120000.sql.gz \
+  | docker compose exec -T db psql -U motelcmb53 motelcmb53
 ```
 
-## Changing Passwords After Deployment
+Daily cron (add to server crontab):
 
-Admin passwords are set in seed.ts and hashed with Argon2. To change a password:
+```
+0 2 * * * cd /opt/motelcmb53 && docker compose exec -T db pg_dump -U motelcmb53 motelcmb53 \
+  | gzip > /opt/backups/$(date +\%Y\%m\%d).sql.gz && find /opt/backups -mtime +30 -delete
+```
 
-1. Login as OwnerAdmin
-2. Go to Users & Roles → select user → (future: change password)
-3. Or via backend CLI:
+---
+
+## Health Checks
+
 ```bash
-docker compose exec backend node -e "
-const { PrismaClient } = require('@prisma/client');
-const argon2 = require('argon2');
-const db = new PrismaClient();
-argon2.hash('NewPassword@2025!').then(hash =>
-  db.user.update({ where: { email: 'admin@motelcmb53.lk' }, data: { passwordHash: hash } })
-).then(() => { console.log('done'); process.exit(0); });
-"
+docker compose ps
+curl https://motelcmb53.duckdns.org/api/health
+docker compose logs backend --tail 50
+docker compose logs proxy --tail 50
 ```
+
+---
+
+## Demo Credentials (development only)
+
+| Role | Email | Password |
+|------|-------|----------|
+| Super Admin | superadmin@thedreamv.com | SuperAdmin@2026 |
+| Owner/Admin | admin@motelcmb53.lk | Admin@2026 |
+| Building Manager | manager@motelcmb53.lk | Manager@2026 |
+| Operator | operator@motelcmb53.lk | Operator@2026 |
+| Cashier | cashier@motelcmb53.lk | Cashier@2026 |
+
+**Change all passwords immediately after first production login.**
