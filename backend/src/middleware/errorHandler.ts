@@ -31,6 +31,7 @@ export function errorHandler(
   }
 
   const status = (err as any).statusCode || 500;
+  const code = (err as any).code as string | undefined;
 
   // Only mask messages for unexpected 5xx server errors.
   // 4xx errors (validation, auth, business logic) always return their real message
@@ -40,7 +41,7 @@ export function errorHandler(
       ? 'An unexpected server error occurred. Please try again.'
       : err.message;
 
-  res.status(status).json({ error: message });
+  res.status(status).json({ error: message, ...(code ? { code } : {}) });
 }
 
 export class AppError extends Error {
