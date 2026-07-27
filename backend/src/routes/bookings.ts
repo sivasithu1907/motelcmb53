@@ -88,6 +88,7 @@ const createBookingSchema = z.object({
   adults: z.number().int().min(1),
   children: z.number().int().min(0).default(0),
   isAc: z.boolean().default(false),
+  overrideNightlyRate: z.number().min(0).optional(),
   discountType: z.enum(['percentage', 'fixed']).nullable().optional(),
   discountValue: z.number().min(0).optional(),
   serviceChargeType: z.enum(['percentage', 'fixed']).nullable().optional(),
@@ -166,7 +167,9 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
 
       // Pricing
       const pricing = calculatePricing({
-        baseNightlyRate: toNumber(room.nonAcRate),
+        baseNightlyRate: data.overrideNightlyRate !== undefined && data.overrideNightlyRate > 0
+          ? data.overrideNightlyRate
+          : toNumber(room.nonAcRate),
         acSurchargePerNight: data.isAc ? toNumber(room.acSurcharge) : 0,
         nights,
         discountType: data.discountType,
@@ -290,6 +293,7 @@ bookingsRouter.post('/', canWrite, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: result.booking.buildingId,
       action: 'BOOKING_CREATED',
       entityType: 'Booking',
       entityId: result.booking.id,
@@ -380,6 +384,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: result.buildingId,
       action: 'BOOKING_CHECKED_IN',
       entityType: 'Booking',
       entityId: String(req.params.id),
@@ -395,7 +400,12 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
 // Checkout
 bookingsRouter.post('/:id/checkout', canWrite, async (req, res, next) => {
   try {
-    const { overrideReason, additionalCharges: extraCharges } = req.body;
+    const { overrideReason, additionalCharges: extraCharges, actualCheckOut: checkoutTimeStr } = req.body;
+    const checkoutTime = checkoutTimeStr ? new Date(checkoutTimeStr) : new Date();
+    if (isNaN(checkoutTime.getTime())) {
+      res.status(400).json({ error: 'Invalid checkout time' });
+      return;
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const booking = await tx.booking.findUnique({
@@ -473,7 +483,7 @@ bookingsRouter.post('/:id/checkout', canWrite, async (req, res, next) => {
         where: { id: req.params.id },
         data: {
           status: 'CheckedOut',
-          actualCheckOut: new Date(),
+          actualCheckOut: checkoutTime,
           checkedOutById: req.user!.id,
           paidAmount,
           outstandingBalance: invoiceOutstanding,
@@ -501,6 +511,7 @@ bookingsRouter.post('/:id/checkout', canWrite, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: result.booking.buildingId,
       action: 'BOOKING_CHECKED_OUT',
       entityType: 'Booking',
       entityId: String(req.params.id),
@@ -535,6 +546,7 @@ bookingsRouter.post('/:id/cancel', canManage, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: booking.buildingId,
       action: 'BOOKING_CANCELLED',
       entityType: 'Booking',
       entityId: String(req.params.id),
@@ -565,6 +577,7 @@ bookingsRouter.post('/:id/no-show', canManage, async (req, res, next) => {
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: booking.buildingId,
       action: 'BOOKING_NO_SHOW',
       entityType: 'Booking',
       entityId: String(req.params.id),
@@ -611,3 +624,109 @@ function buildInvoiceItems(booking: any) {
 
   return items;
 }
+
+// ─── Additional charges (extra guest, food, damage, etc.) ───────────────────
+
+const addChargeSchema = z.object({
+  chargeType: z.enum(['ExtraGuest', 'Food', 'RoomService', 'Laundry', 'Damage', 'LateCheckout', 'Other']),
+  description: z.string().optional(),
+  amount: z.number().positive('Amount must be greater than zero'),
+});
+
+async function recalcBookingTotals(tx: any, bookingId: string) {
+  const charges = await tx.bookingCharge.findMany({ where: { bookingId } });
+  const additionalCharges = charges.reduce((s: number, ch: any) => s + toNumber(ch.amount), 0);
+
+  const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+  const invoiceTotal =
+    toNumber(booking.roomCharge) +
+    additionalCharges +
+    toNumber(booking.serviceCharge) -
+    toNumber(booking.discount);
+  const outstanding = Math.max(0, invoiceTotal - toNumber(booking.paidAmount));
+
+  return tx.booking.update({
+    where: { id: bookingId },
+    data: {
+      additionalCharges,
+      invoiceTotal,
+      outstandingBalance: outstanding,
+    },
+  });
+}
+
+bookingsRouter.post('/:id/charges', canWrite, async (req, res, next) => {
+  try {
+    const data = addChargeSchema.parse(req.body);
+    const bookingId = String(req.params.id);
+
+    const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+    if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
+    if (!['Reserved', 'Confirmed', 'CheckedIn'].includes(booking.status)) {
+      res.status(422).json({ error: 'Charges can only be added to active bookings (not checked-out or cancelled)' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const charge = await tx.bookingCharge.create({
+        data: {
+          bookingId,
+          chargeType: data.chargeType,
+          description: data.description,
+          amount: data.amount,
+        },
+      });
+      const updated = await recalcBookingTotals(tx, bookingId);
+      return { charge, booking: updated };
+    });
+
+    await createAuditLog(req.user, req, {
+      buildingId: booking.buildingId,
+      action: 'CHARGE_ADDED',
+      entityType: 'Booking',
+      entityId: bookingId,
+      newValue: { chargeType: data.chargeType, amount: data.amount, description: data.description },
+    });
+
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+bookingsRouter.delete('/:id/charges/:chargeId', canManage, async (req, res, next) => {
+  try {
+    const bookingId = String(req.params.id);
+    const chargeId = String(req.params.chargeId);
+
+    const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+    if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
+    if (booking.status === 'CheckedOut') {
+      res.status(422).json({ error: 'Cannot modify charges after checkout' });
+      return;
+    }
+
+    const charge = await prisma.bookingCharge.findUnique({ where: { id: chargeId } });
+    if (!charge || charge.bookingId !== bookingId) {
+      res.status(404).json({ error: 'Charge not found' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.bookingCharge.delete({ where: { id: chargeId } });
+      return recalcBookingTotals(tx, bookingId);
+    });
+
+    await createAuditLog(req.user, req, {
+      buildingId: booking.buildingId,
+      action: 'CHARGE_REMOVED',
+      entityType: 'Booking',
+      entityId: bookingId,
+      previousValue: { chargeType: charge.chargeType, amount: toNumber(charge.amount) },
+    });
+
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
