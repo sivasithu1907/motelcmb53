@@ -187,7 +187,7 @@ paymentsRouter.post('/:id/reverse', canManage, async (req, res, next) => {
 
     const result = await prisma.$transaction(async (tx) => {
       const payment = await tx.payment.findUnique({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         include: { booking: { include: { invoice: true, payments: { where: { isReversed: false } } } } },
       });
 
@@ -195,7 +195,7 @@ paymentsRouter.post('/:id/reverse', canManage, async (req, res, next) => {
       if (payment.isReversed) throw Object.assign(new Error('Payment already reversed'), { statusCode: 422 });
 
       await tx.payment.update({
-        where: { id: req.params.id },
+        where: { id: String(req.params.id) },
         data: { isReversed: true, reversalReason: reason, reversedAt: new Date() },
       });
 
