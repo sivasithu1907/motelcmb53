@@ -26,6 +26,7 @@ async function main() {
     prisma.user.deleteMany(),
     prisma.invoiceSequence.deleteMany(),
     prisma.bookingSequence.deleteMany(),
+    prisma.paymentSequence.deleteMany(),
     prisma.setting.deleteMany(),
     prisma.building.deleteMany(),
     prisma.organization.deleteMany(),
@@ -205,8 +206,12 @@ async function main() {
   const yesterday = subDays(today, 1);
   const tomorrow = addDays(today, 1);
 
+  // Initialize payment sequence for the active building
+  await prisma.paymentSequence.create({ data: { buildingId: building.id, lastNumber: 5 } });
+
   const guest1 = await prisma.guest.create({
     data: {
+      organizationId: org.id,
       fullName: 'Kamal Wickramasinghe',
       documentType: 'NIC',
       documentNumber: '198712345678',
@@ -221,6 +226,7 @@ async function main() {
 
   const guest2 = await prisma.guest.create({
     data: {
+      organizationId: org.id,
       fullName: 'Priya Seneviratne',
       documentType: 'NIC',
       documentNumber: '199523456789',
@@ -233,6 +239,7 @@ async function main() {
 
   const guest3 = await prisma.guest.create({
     data: {
+      organizationId: org.id,
       fullName: 'Roshan Mendis',
       documentType: 'Passport',
       documentNumber: 'N12345678',
@@ -247,6 +254,7 @@ async function main() {
   // Booking 1: Currently checked in (Room 9, A/C, 2 nights)
   const booking1 = await prisma.booking.create({
     data: {
+      organizationId: org.id,
       reference: 'BKG-0001',
       buildingId: building.id,
       roomId: roomMap['9'].id,
@@ -292,6 +300,7 @@ async function main() {
   // Booking 2: Upcoming reservation (Room 5)
   const booking2 = await prisma.booking.create({
     data: {
+      organizationId: org.id,
       reference: 'BKG-0002',
       buildingId: building.id,
       roomId: roomMap['5'].id,
@@ -335,6 +344,7 @@ async function main() {
   // Booking 3: Completed/checked out (creates invoice)
   const booking3 = await prisma.booking.create({
     data: {
+      organizationId: org.id,
       reference: 'BKG-0003',
       buildingId: building.id,
       roomId: roomMap['1'].id,
