@@ -67,6 +67,7 @@ paymentsRouter.post('/', canWrite, async (req, res, next) => {
         where: { id: data.bookingId },
         include: {
           invoice: true,
+          building: { select: { code: true } },
           payments: { where: { isReversed: false } },
         },
       });
@@ -75,20 +76,43 @@ paymentsRouter.post('/', canWrite, async (req, res, next) => {
 
       const totalPreviouslyPaid = booking.payments.reduce((s, p) => s + toNumber(p.amount), 0);
       const invoiceTotal = toNumber(booking.invoiceTotal);
+      const outstanding = Math.max(0, invoiceTotal - totalPreviouslyPaid);
 
       // Validate
       if (data.purpose === 'Refund') {
         if (totalPreviouslyPaid <= 0) {
           throw Object.assign(new Error('No payments to refund'), { statusCode: 422 });
         }
+        if (data.amount > totalPreviouslyPaid) {
+          throw Object.assign(
+            new Error(`Refund of LKR ${data.amount.toFixed(2)} exceeds total paid (LKR ${totalPreviouslyPaid.toFixed(2)})`),
+            { statusCode: 422 },
+          );
+        }
         if (req.user!.role !== 'SuperAdmin' && req.user!.role !== 'OwnerAdmin' && req.user!.role !== 'BuildingManager') {
           throw Object.assign(new Error('Insufficient permissions for refund'), { statusCode: 403 });
         }
+      } else {
+        // Prevent overpayment: amount cannot exceed outstanding balance
+        if (data.amount > outstanding + 0.01) {  // 0.01 tolerance for float rounding
+          throw Object.assign(
+            new Error(`Payment of LKR ${data.amount.toFixed(2)} exceeds outstanding balance (LKR ${outstanding.toFixed(2)})`),
+            { statusCode: 422 },
+          );
+        }
       }
 
-      // Build payment reference
-      const payCount = booking.payments.length + 1;
-      const payRef = `${booking.reference}-PAY-${String(payCount).padStart(2, '0')}`;
+      // Build collision-safe payment reference using an atomic sequence per building
+      let paySeq = await tx.paymentSequence.findUnique({ where: { buildingId: booking.buildingId } });
+      if (!paySeq) {
+        paySeq = await tx.paymentSequence.create({ data: { buildingId: booking.buildingId, lastNumber: 0 } });
+      }
+      const nextPayNum = paySeq.lastNumber + 1;
+      await tx.paymentSequence.update({
+        where: { buildingId: booking.buildingId },
+        data: { lastNumber: nextPayNum },
+      });
+      const payRef = `PAY-${booking.building?.code ?? 'CMB'}-${String(nextPayNum).padStart(6, '0')}`;
 
       const payment = await tx.payment.create({
         data: {
