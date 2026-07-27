@@ -54,7 +54,7 @@ bookingsRouter.get('/', async (req, res, next) => {
         take: parseInt(limit),
         include: {
           room: { select: { number: true, capacity: true } },
-          guest: { select: { fullName: true, documentNumber: true, documentNumberMasked: true } },
+          guest: { select: { fullName: true, documentType: true, documentNumber: true, documentNumberMasked: true } },
           invoice: { select: { id: true, number: true, status: true } },
           payments: { where: { isReversed: false }, select: { amount: true, purpose: true } },
           building: { select: { name: true, code: true } },
@@ -62,7 +62,17 @@ bookingsRouter.get('/', async (req, res, next) => {
       }),
     ]);
 
-    res.json({ data: bookings, total, page: parseInt(page), limit: parseInt(limit) });
+    // Strip raw document numbers; add hasValidDocNumber computed field
+    const PLACEHOLDER_PREFIXES = ['PENDING', 'UNKNOWN', 'TEMP'];
+    const sanitizeGuestInList = (g: any) => {
+      if (!g) return null;
+      const raw = g.documentNumber || '';
+      const isPlaceholder = !raw || PLACEHOLDER_PREFIXES.some(p => raw.startsWith(p)) || raw.trim() === '';
+      const { documentNumber: _dn, ...rest } = g;
+      return { ...rest, hasValidDocNumber: !isPlaceholder };
+    };
+    const data = bookings.map(b => ({ ...b, guest: sanitizeGuestInList(b.guest) }));
+    res.json({ data, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
     next(err);
   }
@@ -85,7 +95,18 @@ bookingsRouter.get('/:id', async (req, res, next) => {
       },
     });
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
-    res.json(booking);
+    // Strip raw document number; compute hasValidDocNumber for the frontend
+    const PLACEHOLDER_PREFIXES_D = ['PENDING', 'UNKNOWN', 'TEMP'];
+    const sanitizedBooking = {
+      ...booking,
+      guest: booking.guest ? (() => {
+        const raw = (booking.guest as any).documentNumber || '';
+        const isPlaceholder = !raw || PLACEHOLDER_PREFIXES_D.some(p => raw.startsWith(p)) || raw.trim() === '';
+        const { documentNumber: _dn, ...safeGuest } = booking.guest as any;
+        return { ...safeGuest, hasValidDocNumber: !isPlaceholder };
+      })() : null,
+    };
+    res.json(sanitizedBooking);
   } catch (err) {
     next(err);
   }
@@ -345,7 +366,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
 
       if (!booking) throw Object.assign(new Error('Booking not found'), { statusCode: 404 });
       if (booking.status !== 'Reserved' && booking.status !== 'Confirmed') {
-        throw Object.assign(new Error(`Cannot check in: booking is ${booking.status}`), { statusCode: 422 });
+        throw Object.assign(new Error(`Cannot check in: booking is ${booking.status}`), { statusCode: 422, code: 'INVALID_BOOKING_STATUS' });
       }
 
       // Document check — every check-in requires a linked guest record with:
@@ -354,7 +375,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
       if (!booking.guest) {
         throw Object.assign(
           new Error('A guest record must be linked before check-in. Register the guest and upload their ID.'),
-          { statusCode: 422 },
+          { statusCode: 422, code: 'GUEST_PROFILE_REQUIRED' },
         );
       }
 
@@ -368,7 +389,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
       if (isPlaceholder) {
         throw Object.assign(
           new Error('A valid NIC or passport number is required before check-in. Update the guest record.'),
-          { statusCode: 422 },
+          { statusCode: 422, code: 'DOCUMENT_NUMBER_REQUIRED' },
         );
       }
 
@@ -376,12 +397,12 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
       if (!hasFrontDoc) {
         throw Object.assign(
           new Error('A front-side identity document image must be uploaded before check-in.'),
-          { statusCode: 422 },
+          { statusCode: 422, code: 'IDENTITY_IMAGE_REQUIRED' },
         );
       }
 
       if (!booking.guestMobile) {
-        throw Object.assign(new Error('Guest mobile number required before check-in'), { statusCode: 422 });
+        throw Object.assign(new Error('Guest mobile number required before check-in'), { statusCode: 422, code: 'GUEST_MOBILE_REQUIRED' });
       }
 
       // Room availability
@@ -394,7 +415,7 @@ bookingsRouter.post('/:id/check-in', canWrite, async (req, res, next) => {
       });
 
       if (conflictingCheckIn) {
-        throw Object.assign(new Error('Room is currently occupied by another guest'), { statusCode: 409 });
+        throw Object.assign(new Error('Room is currently occupied by another guest'), { statusCode: 409, code: 'ROOM_NOT_AVAILABLE' });
       }
 
       const updatedBooking = await tx.booking.update({
