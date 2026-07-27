@@ -199,6 +199,7 @@ reportsRouter.get('/revenue', async (req, res, next) => {
         id: p.id,
         paymentReference: p.paymentReference,
         bookingRef: p.booking.reference,
+        guestName: p.guestName,
         amount: toNumber(p.amount),
         purpose: p.purpose,
         method: p.method,
