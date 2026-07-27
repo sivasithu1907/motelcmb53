@@ -31,9 +31,13 @@ export function errorHandler(
   }
 
   const status = (err as any).statusCode || 500;
+
+  // Only mask messages for unexpected 5xx server errors.
+  // 4xx errors (validation, auth, business logic) always return their real message
+  // so the frontend can display exactly what went wrong.
   const message =
-    process.env.NODE_ENV === 'production'
-      ? 'An unexpected error occurred'
+    status >= 500 && process.env.NODE_ENV === 'production'
+      ? 'An unexpected server error occurred. Please try again.'
       : err.message;
 
   res.status(status).json({ error: message });
