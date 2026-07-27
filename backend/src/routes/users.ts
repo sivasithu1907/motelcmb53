@@ -98,10 +98,10 @@ usersRouter.patch('/:id', isAdmin, async (req, res, next) => {
     if (data.isActive !== undefined) updateData.isActive = data.isActive;
     if (data.password) updateData.passwordHash = await argon2.hash(data.password);
 
-    const prev = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const prev = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
 
     const user = await prisma.user.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: {
         ...updateData,
         ...(data.buildingIds !== undefined
