@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format, startOfMonth } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
@@ -8,7 +8,8 @@ import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
 import { useAuth } from '../lib/auth';
 import { api } from '../api/client';
-import { Download } from 'lucide-react';
+import { Download, Printer } from 'lucide-react';
+import { printHtmlDocument, escapeHtml } from '../lib/print';
 
 export default function Reports() {
   const { currentBuildingId } = useAuth();
@@ -51,22 +52,79 @@ export default function Reports() {
     { id: 'cashier', label: 'Cashier' },
   ];
 
-  const exportCSV = () => {
-    if (!revenue?.payments) return;
-    const rows = [
-      ['Reference', 'Booking', 'Amount', 'Purpose', 'Method', 'Date', 'Collected By'],
-      ...revenue.payments.map((p: any) => [
-        p.paymentReference, p.bookingRef, p.amount, p.purpose, p.method,
-        format(new Date(p.paymentDate), 'yyyy-MM-dd HH:mm'), p.collectedBy || '',
-      ]),
-    ];
-    const csv = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `revenue-report-${from}-${to}.csv`;
-    a.click();
+  const EXPORT_COLUMNS = [
+    { key: 'paymentReference', label: 'Reference' },
+    { key: 'bookingRef', label: 'Booking' },
+    { key: 'guestName', label: 'Guest' },
+    { key: 'amount', label: 'Amount' },
+    { key: 'purpose', label: 'Purpose' },
+    { key: 'method', label: 'Method' },
+    { key: 'paymentDate', label: 'Date' },
+    { key: 'collectedBy', label: 'Collected By' },
+  ];
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const exportPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showExportPanel) return;
+    const handleClick = (e: MouseEvent) => {
+      if (exportPanelRef.current && !exportPanelRef.current.contains(e.target as Node)) {
+        setShowExportPanel(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowExportPanel(false); };
+    document.addEventListener('mousedown', handleClick);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [showExportPanel]);
+  const [exportFormat, setExportFormat] = useState<'csv' | 'pdf'>('csv');
+  const [exportCols, setExportCols] = useState<string[]>(EXPORT_COLUMNS.map(c => c.key));
+
+  const toggleExportCol = (key: string) => {
+    setExportCols(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+  };
+
+  const formatCell = (row: any, key: string) => {
+    if (key === 'amount') return formatCurrency(row.amount);
+    if (key === 'paymentDate') return format(new Date(row.paymentDate), 'yyyy-MM-dd HH:mm');
+    return row[key] ?? '';
+  };
+
+  const runExport = () => {
+    if (!revenue?.payments?.length) return;
+    const cols = EXPORT_COLUMNS.filter(c => exportCols.includes(c.key));
+
+    if (exportFormat === 'csv') {
+      const rows = [
+        cols.map(c => c.label),
+        ...revenue.payments.map((p: any) => cols.map(c => formatCell(p, c.key))),
+      ];
+      const csv = rows.map(r => r.map((v: any) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `revenue-report-${from}-${to}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      const headerHtml = cols.map(c => `<th>${escapeHtml(c.label)}</th>`).join('');
+      const rowsHtml = revenue.payments.map((p: any) =>
+        `<tr>${cols.map(c => `<td${c.key === 'amount' ? ' class="text-right"' : ''}>${escapeHtml(String(formatCell(p, c.key)))}</td>`).join('')}</tr>`
+      ).join('');
+      const html = `
+        <h1 style="font-size:20px;font-weight:800;margin:0 0 4px;">Revenue Report</h1>
+        <p class="muted" style="margin:0 0 20px;">${from} to ${to}</p>
+        <table>
+          <thead><tr>${headerHtml}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>`;
+      printHtmlDocument(`Revenue Report ${from} to ${to}`, html);
+    }
+    setShowExportPanel(false);
   };
 
   return (
@@ -80,9 +138,43 @@ export default function Reports() {
           <Input type="date" value={from} onChange={e => setFrom(e.target.value)} className="w-36" />
           <span className="text-slate-400">→</span>
           <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="w-36" />
-          <Button variant="outline" size="sm" onClick={exportCSV}>
-            <Download className="w-4 h-4 mr-1" /> Export CSV
-          </Button>
+          <div className="relative" ref={exportPanelRef}>
+            <Button variant="outline" size="sm" onClick={() => setShowExportPanel(v => !v)}>
+              <Download className="w-4 h-4 mr-1" /> Export
+            </Button>
+            {showExportPanel && (
+              <div className="absolute right-0 top-full mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-xl z-20 p-4 space-y-3">
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Format</p>
+                  <div className="flex gap-2">
+                    <button
+                      className={`flex-1 text-sm py-1.5 rounded-lg border ${exportFormat === 'csv' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-600'}`}
+                      onClick={() => setExportFormat('csv')}>CSV</button>
+                    <button
+                      className={`flex-1 text-sm py-1.5 rounded-lg border ${exportFormat === 'pdf' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-600'}`}
+                      onClick={() => setExportFormat('pdf')}>PDF</button>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Columns to include</p>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                    {EXPORT_COLUMNS.map(c => (
+                      <label key={c.key} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                        <input type="checkbox" checked={exportCols.includes(c.key)}
+                          onChange={() => toggleExportCol(c.key)}
+                          className="rounded text-indigo-600" />
+                        {c.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <Button size="sm" className="w-full" onClick={runExport} disabled={exportCols.length === 0}>
+                  {exportFormat === 'csv' ? <Download className="w-3.5 h-3.5 mr-1.5" /> : <Printer className="w-3.5 h-3.5 mr-1.5" />}
+                  {exportFormat === 'csv' ? 'Download CSV' : 'Open Print / Save as PDF'}
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
