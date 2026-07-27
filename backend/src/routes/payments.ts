@@ -132,10 +132,11 @@ paymentsRouter.post('/', canWrite, async (req, res, next) => {
         });
       }
 
-      return payment;
+      return { ...payment, _buildingId: booking.buildingId };
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: (result as any)._buildingId,
       action: 'PAYMENT_RECORDED',
       entityType: 'Payment',
       entityId: result.id,
@@ -147,7 +148,9 @@ paymentsRouter.post('/', canWrite, async (req, res, next) => {
       },
     });
 
-    res.status(201).json(result);
+    const { _buildingId, ...paymentOut } = result as any;
+
+    res.status(201).json(paymentOut);
   } catch (err) {
     next(err);
   }
@@ -191,17 +194,20 @@ paymentsRouter.post('/:id/reverse', canManage, async (req, res, next) => {
         });
       }
 
-      return payment;
+      return { ...payment, _buildingId: payment.booking.buildingId };
     });
 
     await createAuditLog(req.user, req, {
+      buildingId: (result as any)._buildingId,
       action: 'PAYMENT_REVERSED',
       entityType: 'Payment',
       entityId: String(req.params.id),
       reason,
     });
 
-    res.json(result);
+    const { _buildingId, ...paymentOut } = result as any;
+
+    res.json(paymentOut);
   } catch (err) {
     next(err);
   }
